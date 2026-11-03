@@ -6,6 +6,7 @@ import { parseVoiceCommand } from './utils/voiceCommandParser';
 import {
   getAudioInputDevices,
   pickDefaultMicrophone,
+  isVirtualOrUnwantedMic,
   testMicrophone,
   startAudioCapture
 } from './utils/audioCaptureManager';
@@ -29,20 +30,26 @@ import {
 import { SUPABASE_SCHEMA_SQL } from './services/supabaseSchema';
 import AcSetupModal from './components/AcSetupModal';
 import TvSetupModal from './components/TvSetupModal';
-import { fetchBoardProfile } from './services/profileSetupService';
+import { fetchBoardProfile, getAcProtocolLabel, isTogglePowerAcProtocol, saveAcProtocol } from './services/profileSetupService';
 
 
 
 // Vì sao lần nghe không ra chữ: nhận giọng nói của trình duyệt lỗi và không có bản ghi để gửi AI
 function describeVoiceIssue({ captureError, speechError, hasRecording, hasApiKey }) {
-  if (!hasRecording) {
-    const reason = captureError ? `${captureError.name || 'Lỗi'}: ${captureError.message || ''}`.trim() : 'không thu được âm thanh';
-    return `Không ghi âm được từ micro (${reason}). Kiểm tra micro và quyền truy cập micro của trình duyệt.`;
+  if (speechError === 'not-allowed') {
+    return 'Quyền Micro bị từ chối. Bạn vui lòng bấm vào biểu tượng Micro/Ổ khoá trên thanh địa chỉ trình duyệt để Cho phép (Allow)!';
   }
-  if (!hasApiKey) {
-    return 'Trình duyệt không nhận được giọng nói' + (speechError ? ` (${speechError})` : '') + ' và chưa có API Key AI để nhận diện bản ghi âm.';
+  if (speechError === 'network') {
+    return 'Lỗi kết nối máy chủ nhận diện Google (network). Vui lòng kiểm tra lại mạng Internet hoặc thử nói lại!';
   }
-  return 'Chưa phát hiện giọng nói. Hãy bấm vào nút Micro và nói to rõ nhé!';
+  if (speechError === 'audio-capture') {
+    return 'Không tìm thấy thiết bị Microphone đang hoạt động trên máy tính!';
+  }
+  if (!hasRecording && captureError) {
+    const reason = `${captureError.name || 'Lỗi'}: ${captureError.message || ''}`.trim();
+    return `Không mở được micro (${reason}). Hãy kiểm tra micro trong Cài đặt!`;
+  }
+  return 'Chưa phát hiện giọng nói. Hãy bấm vào nút Micro và nói to rõ ngay nhé!';
 }
 
 function App() {
@@ -55,7 +62,7 @@ function App() {
   const [showPairingModal, setShowPairingModal] = useState(false);
   const [showAcSetup, setShowAcSetup] = useState(false);
   const [showTvSetup, setShowTvSetup] = useState(false);
-  const [acProtocol, setAcProtocol] = useState(null); // Giao thức IRac đang lưu trên mạch
+  const [acProtocol, setAcProtocol] = useState(() => localStorage.getItem('smart_home_ac_protocol') || 'DAIKIN64');
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showFamilyModal, setShowFamilyModal] = useState(false);
 
@@ -110,16 +117,17 @@ function App() {
   // Danh sách thiết bị trong nhà (Quạt, Điều hòa, TV)
   const [devices, setDevices] = useState([
     { id: 'tv_living', boardId: 'board_living_01', name: 'Tivi LG Phòng Khách', room: 'Phòng khách', type: 'tv', active: false, statusText: 'Đã tắt' },
-    { id: 'ac_funiki', boardId: 'board_living_01', name: 'Điều hòa Funiki R32', room: 'Phòng khách', type: 'ac', active: false, temp: 24, mode: 'cool', fan: 'auto', statusText: 'Đã tắt' }
+    { id: 'ac_funiki', boardId: 'board_living_01', name: 'Điều hòa Âm trần Daikin', room: 'Phòng khách', type: 'ac', active: false, temp: 24, mode: 'cool', fan: 'auto', statusText: 'Đã tắt' }
   ]);
 
   // Remote ảo tự tạo & Mã học từ nút bấm (Specs 7.1)
   const [customRemotes, setCustomRemotes] = useState([]);
   const [pendingCodes, setPendingCodes] = useState([]);
   const [selectedCodeToAssign, setSelectedCodeToAssign] = useState(null);
-  const [assignLabel, setAssignLabel] = useState('Chế độ phim');
-  const [assignAction, setAssignAction] = useState('MOVIE_MODE');
-  const [assignAliases, setAssignAliases] = useState('chế độ phim, bật rạp phim');
+  const [assignDeviceId, setAssignDeviceId] = useState('ac_funiki');
+  const [assignLabel, setAssignLabel] = useState('Bật/Tắt điều hòa');
+  const [assignAction, setAssignAction] = useState('AC_POWER');
+  const [assignAliases, setAssignAliases] = useState('bật điều hòa, tắt điều hòa, mở điều hòa, đóng điều hòa');
 
   // Ghép đôi mạch mới
   const [pairingInputCode, setPairingInputCode] = useState('');
@@ -130,6 +138,7 @@ function App() {
   // Điều hòa State
   const [acTemp, setAcTemp] = useState(24);
   const [acMode, setAcMode] = useState('cool');
+  const [acFan, setAcFan] = useState('auto');
 
   // Cấu hình Supabase Backend
   const [supabaseUrl, setSupabaseUrl] = useState(() => getSupabaseConfig().url);
@@ -160,6 +169,7 @@ function App() {
   const [audioDevices, setAudioDevices] = useState([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [isTestingMic, setIsTestingMic] = useState(false);
+  const [testLiveVol, setTestLiveVol] = useState(0);
   const [testRecordedAudioUrl, setTestRecordedAudioUrl] = useState('');
 
   const recognitionRef = useRef(null);
@@ -193,6 +203,34 @@ function App() {
     setTimeout(() => setActionToast(''), 4000);
   };
 
+  const handleToggleTestMic = async () => {
+    if (isTestingMic) {
+      if (micTestControllerRef.current) {
+        micTestControllerRef.current.stop();
+        micTestControllerRef.current = null;
+      }
+      setIsTestingMic(false);
+      setTestLiveVol(0);
+    } else {
+      setIsTestingMic(true);
+      setTestRecordedAudioUrl('');
+      try {
+        const ctrl = await testMicrophone(selectedDeviceId, {
+          onVolume: (vol) => setTestLiveVol(vol),
+          onRecordedUrl: (url) => setTestRecordedAudioUrl(url),
+          onError: (err) => {
+            showNotification('Lỗi khi mở micro: ' + (err.message || err.name));
+            setIsTestingMic(false);
+          }
+        });
+        micTestControllerRef.current = ctrl;
+      } catch (e) {
+        showNotification('Không thể mở micro: ' + e.message);
+        setIsTestingMic(false);
+      }
+    }
+  };
+
   // Tải dữ liệu ban đầu từ Supabase (Homes, Boards, Devices, Remotes, Pending Codes)
   const refreshHomeData = async () => {
     if (!isSupabaseConfigured()) return;
@@ -208,6 +246,7 @@ function App() {
           if (ac) {
             setAcTemp(ac.temp || 24);
             setAcMode(ac.mode || 'cool');
+            if (ac.fan) setAcFan(ac.fan);
           }
         }
         if (data.customRemotes) setCustomRemotes(data.customRemotes);
@@ -243,6 +282,7 @@ function App() {
         if (st.device_id === 'ac_funiki') {
           if (st.temp) setAcTemp(st.temp);
           if (st.mode) setAcMode(st.mode);
+          if (st.fan) setAcFan(st.fan);
         }
       },
       onBoardUpdated: (board) => {
@@ -285,14 +325,23 @@ function App() {
     };
   }, []);
 
-  // Tự động quét và chọn Microphone vật lý tốt nhất (loại bỏ micro ảo, lọc tạp âm)
+  // Tự động quét và chọn Microphone vật lý thực tế (loại bỏ DeskIn/micro ảo, ưu tiên Microphone Array/Realtek)
   useEffect(() => {
     let alive = true;
     getAudioInputDevices().then((devices) => {
       if (!alive || !devices || devices.length === 0) return;
       setAudioDevices(devices);
-      const best = pickDefaultMicrophone(devices);
-      if (best) setSelectedDeviceId(best);
+      const saved = localStorage.getItem('selected_audio_device');
+      const savedDev = saved ? devices.find(d => d.deviceId === saved) : null;
+      if (savedDev && !isVirtualOrUnwantedMic(savedDev.label)) {
+        setSelectedDeviceId(saved);
+      } else {
+        const best = pickDefaultMicrophone(devices);
+        if (best) {
+          setSelectedDeviceId(best);
+          localStorage.setItem('selected_audio_device', best);
+        }
+      }
     }).catch((err) => {
       console.warn('Lỗi quét thiết bị microphone lúc khởi động:', err);
     });
@@ -304,8 +353,18 @@ function App() {
     let alive = true;
     fetchBoardProfile().then((res) => {
       if (!alive || !res.ok) return;
-      const ac = res.devices.find(d => d.id === 'ac_funiki');
-      if (ac?.acProtocol) setAcProtocol(ac.acProtocol);
+      const ac = res.devices.find(d => d.id === 'ac_funiki') || res.devices.find(d => d.type === 'ac' || d.id === 'ac_living');
+      if (ac?.acProtocol) {
+        const savedLocal = localStorage.getItem('smart_home_ac_protocol');
+        if (!savedLocal && ac.acProtocol === 'COOLIX') {
+          setAcProtocol('DAIKIN64');
+          localStorage.setItem('smart_home_ac_protocol', 'DAIKIN64');
+          saveAcProtocol({ deviceId: ac.id || 'ac_funiki', protocol: 'DAIKIN64', name: 'Điều hòa Âm trần Daikin' });
+        } else {
+          setAcProtocol(ac.acProtocol);
+          localStorage.setItem('smart_home_ac_protocol', ac.acProtocol);
+        }
+      }
     });
     return () => { alive = false; };
   }, []);
@@ -413,18 +472,63 @@ function App() {
     }
   };
 
-  // Điều khiển Điều hòa (AC)
-  const handleAcControl = async ({ power, temp, mode, fan }) => {
-    const targetPower = power !== undefined ? power : true;
+  // Điều khiển Điều hòa Âm trần / Treo tường (AC)
+  const handleAcControl = async ({
+    power,
+    temp,
+    mode,
+    fan,
+    forceToggle = false,
+    keepPower = false,
+    actionOverride,
+    syncOnly = false,
+  }) => {
+    const targetPower = power !== undefined ? Boolean(power) : true;
     const targetTemp = temp !== undefined ? temp : acTemp;
     const targetMode = mode !== undefined ? mode : acMode;
-    const targetFan = fan || 'auto';
+    const targetFan = fan !== undefined ? fan : acFan;
+    const targetProtocol = acProtocol || 'DAIKIN64';
 
     if (temp !== undefined) setAcTemp(targetTemp);
     if (mode !== undefined) setAcMode(targetMode);
+    if (fan !== undefined) setAcFan(targetFan);
 
-    const action = targetPower ? 'SET' : 'POWER_OFF';
-    const title = targetPower ? `Bật điều hòa ${targetTemp}°C` : 'Tắt điều hòa';
+    // Đồng bộ trạng thái nguồn (khi người dùng vừa bấm remote vật lý, không phát tia IR)
+    if (syncOnly || actionOverride === 'SYNC_POWER') {
+      setDevices(prev => prev.map(d => (d.id === 'ac_funiki' || d.type === 'ac') ? {
+        ...d,
+        active: targetPower,
+        temp: targetTemp,
+        mode: targetMode,
+        fan: targetFan,
+        statusText: targetPower ? `Đang bật (${targetTemp}°C)` : 'Đã tắt'
+      } : d));
+      const syncTitle = `Đồng bộ trạng thái: ${targetPower ? 'Đang Bật' : 'Đã Tắt'} (không phát IR)`;
+      showNotification(`⇄ ${syncTitle}`);
+      await sendIotCommand({
+        deviceId: 'ac_funiki',
+        action: 'SYNC_POWER',
+        title: syncTitle,
+        power: targetPower,
+        temp: targetTemp,
+        mode: targetMode,
+        fan: targetFan,
+        protocol: targetProtocol,
+        device: 'Điều hòa âm trần (Hồng ngoại)'
+      });
+      return;
+    }
+
+    const modeNames = { cool: 'Lạnh', dry: 'Hút ẩm', fan: 'Quạt', heat: 'Sưởi', auto: 'Tự động' };
+    const action = actionOverride || (targetPower ? 'SET' : 'POWER_OFF');
+    let title = targetPower
+      ? `Điều hòa ${targetTemp}°C (${modeNames[targetMode] || targetMode})`
+      : 'Tắt điều hòa';
+    if (action === 'POWER') {
+      title = `Đảo nguồn điều hòa (${targetPower ? 'Bật' : 'Tắt'})`;
+    } else if (action === 'POWER_ON') {
+      title = `Bật điều hòa ${targetTemp}°C`;
+    }
 
     const cmd = {
       deviceId: 'ac_funiki',
@@ -434,7 +538,10 @@ function App() {
       temp: targetTemp,
       mode: targetMode,
       fan: targetFan,
-      device: 'Điều hòa (Hồng ngoại)'
+      protocol: targetProtocol,
+      forceToggle,
+      keepPower,
+      device: 'Điều hòa âm trần (Hồng ngoại)'
     };
 
     setParsedCommand(cmd);
@@ -444,11 +551,12 @@ function App() {
     const res = await sendIotCommand(cmd);
     if (res.success) {
       showNotification(res.message);
-      setDevices(prev => prev.map(d => d.id === 'ac_funiki' ? {
+      setDevices(prev => prev.map(d => (d.id === 'ac_funiki' || d.type === 'ac') ? {
         ...d,
         active: targetPower,
         temp: targetTemp,
         mode: targetMode,
+        fan: targetFan,
         statusText: targetPower ? `Đang bật (${targetTemp}°C)` : 'Đã tắt'
       } : d));
     } else {
@@ -462,7 +570,8 @@ function App() {
       deviceId: remote.deviceId || 'tv_living',
       action: btn.action || 'CUSTOM_ACTION',
       title: btn.label || 'Nút tuỳ chỉnh',
-      device: remote.name || 'Remote ảo'
+      device: remote.name || 'Remote ảo',
+      ir: btn.ir || undefined
     };
     setParsedCommand(cmd);
     speakFeedback(cmd.title);
@@ -504,7 +613,7 @@ function App() {
     const aliases = assignAliases.split(',').map(s => s.trim()).filter(Boolean);
     const res = await assignLearnedCode({
       codeId: selectedCodeToAssign.id,
-      deviceId: 'tv_living',
+      deviceId: assignDeviceId || 'ac_funiki',
       action: assignAction,
       label: assignLabel,
       voiceAliases: aliases
@@ -528,14 +637,32 @@ function App() {
     // 1. Phân tích qua parser nội bộ với danh sách customRemotes
     const parsed = parseVoiceCommand(clean, customRemotes);
     if (parsed && parsed.action !== 'UNKNOWN') {
+      if (parsed.ir) {
+        await handleCustomButtonClick(
+          { deviceId: parsed.deviceId, name: parsed.device },
+          { action: parsed.action, label: parsed.title, ir: parsed.ir }
+        );
+        return;
+      }
+
       setParsedCommand(parsed);
       speakFeedback(parsed.title);
 
-      if (parsed.deviceId === 'ac_funiki' || parsed.action === 'POWER_OFF' || parsed.action === 'SET') {
+      const isAc = parsed.deviceId === 'ac_funiki' ||
+                   (parsed.device && parsed.device.toLowerCase().includes('điều hòa')) ||
+                   (parsed.action && parsed.action.startsWith('AC_'));
+
+      if (isAc) {
+        const curActive = Boolean(devices.find(d => d.id === 'ac_funiki')?.active);
+        const explicitTurnOn = /\b(bật|mở|bat|mo)\b/i.test(clean);
         await handleAcControl({
           power: parsed.power,
-          temp: parsed.temp,
-          mode: parsed.mode
+          temp: parsed.hasExplicitTemp === false ? acTemp : parsed.temp,
+          mode: parsed.hasExplicitMode === false ? acMode : parsed.mode,
+          fan: parsed.hasExplicitFan === false ? acFan : parsed.fan,
+          keepPower: parsed.power !== false && curActive,
+          forceToggle: parsed.power !== false && !curActive && explicitTurnOn,
+          actionOverride: parsed.power === false ? 'POWER_OFF' : (explicitTurnOn && !curActive ? 'POWER_ON' : 'SET'),
         });
       } else {
         await handleTvCommand(parsed.action, parsed.title);
@@ -546,19 +673,62 @@ function App() {
     // 2. Dự phòng gọi Gemini AI
     if (geminiApiKey) {
       try {
-        const aiRes = await analyzeVoiceWithGemini(clean, geminiApiKey);
+        const aiRes = await analyzeVoiceWithGemini(clean, geminiApiKey, customRemotes);
         if (aiRes && aiRes.action && aiRes.action !== 'UNKNOWN') {
+          // Kiểm tra nếu là nút của remote ảo
+          let matchedCustomBtn = null;
+          let matchedRemote = null;
+          if (Array.isArray(customRemotes)) {
+            for (const r of customRemotes) {
+              const b = (r.buttons || []).find(btn => btn.action === aiRes.action || btn.label === aiRes.title);
+              if (b) {
+                matchedCustomBtn = b;
+                matchedRemote = r;
+                break;
+              }
+            }
+          }
+
+          if (matchedCustomBtn && matchedRemote) {
+            await handleCustomButtonClick(matchedRemote, matchedCustomBtn);
+            return;
+          }
+
+          const isAc = aiRes.action.startsWith('AC_') || 
+                       aiRes.device?.toLowerCase().includes('điều hòa') ||
+                       aiRes.device?.toLowerCase().includes('máy lạnh');
           const cmd = {
-            deviceId: 'tv_living',
+            deviceId: isAc ? 'ac_funiki' : (aiRes.deviceId || 'tv_living'),
             action: aiRes.action,
-            title: aiRes.title || 'Lệnh điều khiển TV'
+            title: aiRes.title || (isAc ? 'Lệnh điều hòa' : 'Lệnh điều khiển TV'),
+            device: isAc ? 'Điều hòa (Hồng ngoại)' : (aiRes.device || 'Smart TV (Hồng ngoại)'),
+            power: aiRes.action !== 'AC_OFF',
+            temp: aiRes.temp || 24,
+            mode: aiRes.mode || 'cool',
+            fan: aiRes.fan || 'auto'
           };
           setParsedCommand(cmd);
           speakFeedback(cmd.title);
-          await handleTvCommand(cmd.action, cmd.title);
+
+          if (isAc) {
+            const curActive = Boolean(devices.find(d => d.id === 'ac_funiki')?.active);
+            const wantOn = aiRes.action !== 'AC_OFF';
+            await handleAcControl({
+              power: wantOn,
+              temp: aiRes.temp || 24,
+              mode: aiRes.mode || 'cool',
+              fan: aiRes.fan || 'auto',
+              keepPower: wantOn && curActive,
+              actionOverride: wantOn ? (curActive ? 'SET' : 'POWER_ON') : 'POWER_OFF',
+            });
+          } else {
+            await handleTvCommand(cmd.action, cmd.title);
+          }
           return;
         }
-      } catch { }
+      } catch (err) {
+        console.warn('Lỗi phân tích Gemini AI fallback:', err);
+      }
     }
 
     speakFeedback('Chưa nhận diện được giọng nói');
@@ -576,9 +746,8 @@ function App() {
   };
 
   // Quản lý Microphone & Nhận diện
-  const startListening = async () => {
+  const startListening = () => {
     if (isListeningRef.current || isStartingRef.current) return;
-    isStartingRef.current = true;
     sessionIdRef.current += 1;
     sessionStartTimeRef.current = Date.now();
     const currentSession = sessionIdRef.current;
@@ -589,11 +758,11 @@ function App() {
     commandHandledRef.current = false;
     currentTranscriptRef.current = '';
     voiceIssueRef.current = { captureError: null, speechError: null };
+    maxSessionVolumeRef.current = 0;
 
     // Trình duyệt chỉ cho dùng micro trên HTTPS hoặc localhost (mở bằng http://<IP> sẽ bị chặn, không báo lỗi)
     if (typeof window !== 'undefined' && window.isSecureContext === false) {
       showNotification('Micro chỉ chạy trên HTTPS hoặc localhost. Bạn đang mở bằng http://' + window.location.host + ' — hãy dùng localhost hoặc HTTPS.');
-      isStartingRef.current = false;
       return;
     }
 
@@ -603,109 +772,137 @@ function App() {
 
     if (!hasMedia && !SpeechRecognition) {
       showNotification('Trình duyệt không hỗ trợ microphone hoặc chưa cho phép kết nối.');
-      isStartingRef.current = false;
       return;
     }
 
-    try {
-      const capture = await startAudioCapture({
-        deviceId: selectedDeviceId,
+    // Đánh dấu lắng nghe NGAY LẬP TỨC để UI phản hồi không có độ trễ
+    setIsListening(true);
+    isListeningRef.current = true;
+
+    // 2. Web Speech API nhận diện trực tiếp bằng tiếng Việt (Khởi động tức thì)
+    if (SpeechRecognition) {
+      const launchRecognition = () => {
+        if (!isListeningRef.current || sessionIdRef.current !== currentSession) return;
+        try {
+          const recognition = new SpeechRecognition();
+          recognition.lang = 'vi-VN';
+          recognition.continuous = false; // Lệnh khẩu lệnh đơn: tự động chốt câu ngay khi ngắt câu
+          recognition.interimResults = true;
+          recognition.maxAlternatives = 1;
+
+          recognition.onresult = (event) => {
+            let accumulatedFinal = '';
+            let interim = '';
+            for (let i = 0; i < event.results.length; i++) {
+              const res = event.results[i];
+              if (res.isFinal) {
+                accumulatedFinal += res[0].transcript;
+              } else {
+                interim += res[0].transcript;
+              }
+            }
+            const combined = (accumulatedFinal + ' ' + interim).trim();
+            if (interim) {
+              setInterimText(interim);
+            }
+            if (combined) {
+              currentTranscriptRef.current = combined;
+            }
+            if (accumulatedFinal) {
+              setTranscript(accumulatedFinal);
+              setInterimText('');
+              currentTranscriptRef.current = accumulatedFinal;
+              if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+              silenceTimerRef.current = setTimeout(() => {
+                if (isListeningRef.current && sessionIdRef.current === currentSession) {
+                  stopListening();
+                }
+              }, 400);
+            }
+          };
+
+          recognition.onerror = (e) => {
+            console.warn('SpeechRecognition error:', e.error);
+            voiceIssueRef.current.speechError = e.error;
+            if (e.error === 'not-allowed') {
+              showNotification('Quyền Micro bị từ chối. Hãy cho phép Micro trên trình duyệt!');
+              stopListening();
+            } else if (e.error === 'network') {
+              showNotification('Lỗi kết nối máy chủ giọng nói Google (network).');
+            } else if (e.error === 'audio-capture') {
+              showNotification('Không tìm thấy thiết bị Micro đang hoạt động!');
+            }
+          };
+
+          recognition.onend = () => {
+            if (!isListeningRef.current || sessionIdRef.current !== currentSession) return;
+            // Nếu đã nhận diện được câu nói thì dừng và thực thi lệnh ngay
+            if (currentTranscriptRef.current) {
+              stopListening();
+              return;
+            }
+            // Nếu chưa có chữ và chưa hết 8s, tự tạo instance mới để nghe tiếp
+            const elapsed = Date.now() - sessionStartTimeRef.current;
+            if (elapsed < 8000) {
+              setTimeout(() => {
+                if (isListeningRef.current && sessionIdRef.current === currentSession) {
+                  launchRecognition();
+                }
+              }, 80);
+            } else {
+              stopListening();
+            }
+          };
+
+          recognitionRef.current = recognition;
+          recognition.start();
+        } catch (recErr) {
+          console.warn('Lỗi khởi tạo SpeechRecognition:', recErr);
+        }
+      };
+
+      launchRecognition();
+    }
+
+    // 3. Khởi động AudioCapture đo sóng âm song song trong nền (không chặn luồng nhận diện)
+    if (hasMedia) {
+      const activeMicId = selectedDeviceId || pickDefaultMicrophone(audioDevices);
+      startAudioCapture({
+        deviceId: activeMicId,
         onVolume: (vol) => {
-          if (sessionIdRef.current === currentSession) setLiveVolume(vol);
+          if (sessionIdRef.current === currentSession) {
+            setLiveVolume(vol);
+            if (vol > maxSessionVolumeRef.current) {
+              maxSessionVolumeRef.current = vol;
+            }
+          }
         },
         onFrequencyBands: (bands) => {
           if (sessionIdRef.current === currentSession) setFrequencyBands(bands);
         },
         onError: (err) => {
-          console.warn('Lỗi AudioCapture:', err);
-          if (err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) {
-            showNotification('Microphone bị chặn! Bạn vui lòng bấm icon ổ khóa trên thanh địa chỉ để Cho phép (Allow) Micro.');
-          }
+          console.warn('Lỗi AudioCapture visualizer:', err);
+          voiceIssueRef.current.captureError = err;
         }
+      }).then((capture) => {
+        if (sessionIdRef.current === currentSession && isListeningRef.current) {
+          audioCaptureRef.current = capture;
+        } else if (capture) {
+          try { capture.stop(); } catch {}
+        }
+      }).catch((captureErr) => {
+        console.warn('Không thể khởi động AudioCapture:', captureErr);
+        voiceIssueRef.current.captureError = captureErr;
       });
-      audioCaptureRef.current = capture;
-    } catch (captureErr) {
-      console.warn('Không thể khởi động AudioCapture:', captureErr);
-      voiceIssueRef.current.captureError = captureErr;
-      if (captureErr && (captureErr.name === 'NotAllowedError' || captureErr.name === 'PermissionDeniedError')) {
-        showNotification('Microphone bị chặn! Hãy cho phép quyền truy cập Micro trên trình duyệt.');
-      }
     }
 
-    setIsListening(true);
-    isListeningRef.current = true;
-    isStartingRef.current = false;
-
-    // 2. Web Speech API nhận diện trực tiếp bằng tiếng Việt
-    if (SpeechRecognition) {
-      try {
-        const recognition = new SpeechRecognition();
-        recognition.lang = 'vi-VN';
-        recognition.continuous = false; // Ngắt câu tự động khi dứt lời
-        recognition.interimResults = true;
-        recognition.maxAlternatives = 1;
-
-        recognition.onresult = (event) => {
-          let interim = '';
-          let final = '';
-          for (let i = event.resultIndex; i < event.results.length; i++) {
-            if (event.results[i].isFinal) final += event.results[i][0].transcript;
-            else interim += event.results[i][0].transcript;
-          }
-          if (interim) {
-            setInterimText(interim);
-            currentTranscriptRef.current = interim;
-          }
-          if (final) {
-            setTranscript(final);
-            setInterimText('');
-            currentTranscriptRef.current = final;
-            // Nhận diện xong câu lệnh -> Dừng thu âm và thực thi ngay lập tức!
-            stopListening();
-            return;
-          }
-          if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-          silenceTimerRef.current = setTimeout(() => {
-            if (isListeningRef.current && (currentTranscriptRef.current || final)) {
-              stopListening();
-            }
-          }, 1200);
-        };
-
-        recognition.onerror = (e) => {
-          console.warn('SpeechRecognition error:', e.error);
-          voiceIssueRef.current.speechError = e.error;
-          if (e.error === 'not-allowed') {
-            showNotification('Quyền Micro bị từ chối. Hãy cho phép Micro trên trình duyệt!');
-            stopListening();
-          }
-          // Với lỗi 'network' hoặc 'no-speech' của Chrome, không dừng gấp
-          // mà để MediaRecorder tiếp tục thu âm hoàn chỉnh cho Gemini AI xử lý
-        };
-
-        recognition.onend = () => {
-          if (!isListeningRef.current) return;
-          const elapsed = Date.now() - sessionStartTimeRef.current;
-          // Nếu đã có văn bản nhận diện được hoặc đã nói hơn 3.5s, tự dừng và phân tích
-          if (currentTranscriptRef.current || elapsed >= 3500) {
-            stopListening();
-          } else {
-            console.log('Web Speech API dừng sớm khi chưa có transcript, tiếp tục ghi âm qua MediaRecorder...');
-          }
-        };
-
-        recognitionRef.current = recognition;
-        recognition.start();
-      } catch (recErr) {
-        console.warn('Lỗi khởi tạo SpeechRecognition:', recErr);
-      }
-    }
-
+    // Tự động giới hạn phiên lắng nghe tối đa 8 giây
+    if (maxSessionTimerRef.current) clearTimeout(maxSessionTimerRef.current);
     maxSessionTimerRef.current = setTimeout(() => {
       if (isListeningRef.current && sessionIdRef.current === currentSession) {
         stopListening();
       }
-    }, 4500);
+    }, 8000);
   };
 
   const stopListening = async () => {
@@ -738,33 +935,24 @@ function App() {
     const finalQuery = (currentTranscriptRef.current || transcript || interimText).trim();
     if (finalQuery) {
       processVoiceText(finalQuery);
-    } else if (recordedBlob && geminiApiKey) {
+    } else if (recordedBlob && geminiApiKey && !geminiApiKey.startsWith('sk-')) {
       showNotification('Đang nhận diện giọng nói qua Gemini AI...');
       try {
         const aiRes = await transcribeAndAnalyzeAudioWithGemini(recordedBlob, geminiApiKey);
-        if (aiRes && aiRes.transcript) {
-          setTranscript(aiRes.transcript);
-          processVoiceText(aiRes.transcript);
-        } else if (aiRes && aiRes.action && aiRes.action !== 'UNKNOWN') {
-          setTranscript(aiRes.title || aiRes.action);
-          if (aiRes.device?.toLowerCase().includes('điều hòa') || aiRes.action.startsWith('AC_')) {
-            await handleAcControl({
-              power: aiRes.action !== 'AC_OFF',
-              temp: aiRes.temp || 24,
-              mode: 'cool'
-            });
-          } else {
-            await handleTvCommand(aiRes.action, aiRes.title || 'Lệnh Tivi');
-          }
+        if (aiRes && aiRes.transcript && aiRes.transcript.trim()) {
+          setTranscript(aiRes.transcript.trim());
+          processVoiceText(aiRes.transcript.trim());
         } else {
           showNotification('Chưa nghe rõ giọng nói. Bạn hãy nói to hơn hoặc dùng các nút lệnh bên dưới!');
         }
       } catch (aiErr) {
         console.error('Lỗi Gemini AI audio:', aiErr);
-        showNotification('Chưa nhận diện được. Hãy thử nói lại hoặc gõ lệnh trực tiếp!');
+        showNotification('Lỗi AI nhận diện âm thanh: ' + (aiErr.message || 'Hãy thử nói lại!'));
       }
+    } else if (maxSessionVolumeRef.current > 12) {
+      showNotification('Đã bắt được tiếng nói! Bạn hãy đổi Micro mặc định trên Chrome sang "Microphone Array" (bấm icon cài đặt cạnh ô địa chỉ URL) để nhận diện chữ nhé!');
     } else {
-      showNotification(describeVoiceIssue({ ...voiceIssueRef.current, hasRecording: Boolean(recordedBlob), hasApiKey: Boolean(geminiApiKey) }));
+      showNotification('Chưa nghe rõ giọng nói. Bạn hãy nói to, rõ hơn vào Micro hoặc chọn nút lệnh nhanh bên dưới nhé!');
     }
   };
 
@@ -906,11 +1094,11 @@ function App() {
             <div className="mic-active-feedback">
               <div className="audio-wave-visualizer">
                 {frequencyBands.slice(0, 14).map((band, i) => {
-                  const h = Math.max(5, Math.min(32, (band / 255) * 36));
+                  const h = Math.max(6, Math.min(38, Math.round((band / 100) * 38)));
                   return (
                     <div
                       key={i}
-                      className={`wave-bar ${band > 8 ? 'active-voice' : ''}`}
+                      className={`wave-bar ${band > 12 ? 'active-voice' : ''}`}
                       style={{ height: `${h}px` }}
                     />
                   );
@@ -919,7 +1107,7 @@ function App() {
 
               <div className="mic-live-vol-pill active-signal">
                 <span className="live-vol-dot" />
-                <span className="vol-text">Đang nghe: {liveVolume > 5 ? `${liveVolume}%` : 'Bạn hãy nói...'}</span>
+                <span className="vol-text">Đang nghe: {liveVolume > 3 ? `${liveVolume}%` : 'Bạn hãy nói...'}</span>
               </div>
 
               {interimText || transcript ? (
@@ -947,7 +1135,10 @@ function App() {
                   </svg>
                   <span>YouTube</span>
                 </button>
-                <button type="button" className="suggestion-pill-chip" onClick={() => handleAcControl({ temp: 24, power: true })}>
+                <button type="button" className="suggestion-pill-chip" onClick={() => {
+                  const curActive = Boolean(devices.find(d => d.id === 'ac_funiki')?.active);
+                  handleAcControl({ temp: 24, power: true, keepPower: curActive, forceToggle: !curActive, actionOverride: curActive ? 'SET' : 'POWER_ON' });
+                }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
                     <path d="M12 2v20" />
                     <path d="m4.93 4.93 14.14 14.14" />
@@ -988,7 +1179,21 @@ function App() {
               type="button"
               className="assign-code-btn"
               onClick={() => {
-                setSelectedCodeToAssign(pendingCodes[0]);
+                const pc = pendingCodes[0];
+                setSelectedCodeToAssign(pc);
+                const proto = (pc?.ir?.protocol || '').toUpperCase();
+                const isAc = proto.includes('DAIKIN') || proto.includes('AC') || proto.includes('PANASONIC') || proto.includes('TOSHIBA');
+                if (isAc) {
+                  setAssignDeviceId('ac_funiki');
+                  setAssignLabel('Bật/Tắt điều hòa');
+                  setAssignAction('POWER');
+                  setAssignAliases('bật điều hòa, tắt điều hòa, mở điều hòa, đóng điều hòa, bật máy lạnh, tắt máy lạnh');
+                } else {
+                  setAssignDeviceId('tv_living');
+                  setAssignLabel('Nút mới');
+                  setAssignAction('CUSTOM_KEY');
+                  setAssignAliases('bật nút mới, mở nút mới');
+                }
                 setShowAssignModal(true);
               }}
             >
@@ -1122,7 +1327,7 @@ function App() {
         </div>
       </section>
 
-      {/* 6. ĐIỀU KHIỂN ĐIỀU HÒA (THERMOSTAT CARD) */}
+      {/* 6. ĐIỀU KHIỂN ĐIỀU HÒA ÂM TRẦN (THERMOSTAT CARD) */}
       <section className="devices-section">
         <div className="device-card-container ac-thermostat-card">
           <div className="ac-panel-header">
@@ -1136,11 +1341,11 @@ function App() {
                 </svg>
               </div>
               <div>
-                <h3 className="device-card-title">{devices.find(d => d.id === 'ac_funiki')?.name || 'Điều hòa'}</h3>
+                <h3 className="device-card-title">{devices.find(d => d.id === 'ac_funiki')?.name || 'Điều hòa Âm trần Daikin'}</h3>
                 <span className="device-card-subtitle">
                   Giao thức:{' '}
-                  <button type="button" className="ac-protocol-link" onClick={() => setShowAcSetup(true)}>
-                    {acProtocol || 'Chọn giao thức'}
+                  <button type="button" className="ac-protocol-link" onClick={() => setShowAcSetup(true)} title={getAcProtocolLabel(acProtocol)}>
+                    {acProtocol || 'DAIKIN64'} (Đổi)
                   </button>
                 </span>
               </div>
@@ -1149,8 +1354,13 @@ function App() {
               type="button"
               className={`ac-power-toggle-btn ${devices.find(d => d.id === 'ac_funiki')?.active ? 'active' : ''}`}
               onClick={() => {
-                const currentActive = devices.find(d => d.id === 'ac_funiki')?.active;
-                handleAcControl({ power: !currentActive });
+                const currentActive = Boolean(devices.find(d => d.id === 'ac_funiki')?.active);
+                const nextPower = !currentActive;
+                handleAcControl({
+                  power: nextPower,
+                  forceToggle: true,
+                  actionOverride: nextPower ? 'POWER_ON' : 'POWER_OFF'
+                });
               }}
             >
               <span className="power-indicator-dot" />
@@ -1158,11 +1368,40 @@ function App() {
             </button>
           </div>
 
+          {/* Hàng công cụ chuyên dụng cho Điều hòa Âm trần Toggle Nguồn (BRC52A62 / DAIKIN64) */}
+          <div className="ac-ceiling-tools-row">
+            <button
+              type="button"
+              className="ac-tool-pill-btn toggle-pulse"
+              title="Phát trực tiếp 1 xung ON/OFF giống hệt bấm nút nguồn trên remote âm trần BRC52A62"
+              onClick={() => {
+                const currentActive = Boolean(devices.find(d => d.id === 'ac_funiki')?.active);
+                handleAcControl({ power: !currentActive, forceToggle: true, actionOverride: 'POWER' });
+              }}
+            >
+              ⚡ Đảo nguồn trực tiếp
+            </button>
+            <button
+              type="button"
+              className="ac-tool-pill-btn sync-state"
+              title="Khớp lại trạng thái Bật/Tắt khi bạn vừa dùng remote vật lý mà không phát tia hồng ngoại"
+              onClick={() => {
+                const currentActive = Boolean(devices.find(d => d.id === 'ac_funiki')?.active);
+                handleAcControl({ power: !currentActive, syncOnly: true, actionOverride: 'SYNC_POWER' });
+              }}
+            >
+              ⇄ Đồng bộ ({devices.find(d => d.id === 'ac_funiki')?.active ? 'sang Tắt' : 'sang Bật'})
+            </button>
+          </div>
+
           <div className="ac-temp-controller">
             <button
               type="button"
               className="ac-stepper-btn"
-              onClick={() => handleAcControl({ temp: Math.max(16, acTemp - 1) })}
+              onClick={() => {
+                const currentActive = Boolean(devices.find(d => d.id === 'ac_funiki')?.active);
+                handleAcControl({ temp: Math.max(16, acTemp - 1), keepPower: currentActive });
+              }}
               aria-label="Giảm nhiệt độ"
             >
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round">
@@ -1170,7 +1409,9 @@ function App() {
               </svg>
             </button>
             <div className="ac-temp-display">
-              <span className="ac-temp-label">Nhiệt độ cài đặt</span>
+              <span className="ac-temp-label">
+                Nhiệt độ cài đặt {isTogglePowerAcProtocol(acProtocol) ? '• Âm trần' : ''}
+              </span>
               <div className="ac-temp-value-row">
                 <span className="ac-temp-number">{acTemp}</span>
                 <span className="ac-temp-unit">°C</span>
@@ -1179,7 +1420,10 @@ function App() {
             <button
               type="button"
               className="ac-stepper-btn"
-              onClick={() => handleAcControl({ temp: Math.min(30, acTemp + 1) })}
+              onClick={() => {
+                const currentActive = Boolean(devices.find(d => d.id === 'ac_funiki')?.active);
+                handleAcControl({ temp: Math.min(30, acTemp + 1), keepPower: currentActive });
+              }}
               aria-label="Tăng nhiệt độ"
             >
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round">
@@ -1195,7 +1439,7 @@ function App() {
                 id: 'cool',
                 label: 'Lạnh',
                 icon: (
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
                     <path d="M12 2v20" />
                     <path d="m4.93 4.93 14.14 14.14" />
                     <path d="M2 12h20" />
@@ -1207,7 +1451,7 @@ function App() {
                 id: 'dry',
                 label: 'Hút ẩm',
                 icon: (
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z" />
                   </svg>
                 )
@@ -1216,7 +1460,7 @@ function App() {
                 id: 'fan',
                 label: 'Quạt',
                 icon: (
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="12" r="3" />
                     <path d="M12 9a3 3 0 0 0-3-3H6a3 3 0 0 0 0 6h3" />
                     <path d="M15 12a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v3" />
@@ -1226,10 +1470,20 @@ function App() {
                 )
               },
               {
+                id: 'heat',
+                label: 'Sưởi',
+                icon: (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                    <circle cx="12" cy="12" r="4" />
+                    <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+                  </svg>
+                )
+              },
+              {
                 id: 'auto',
                 label: 'Tự động',
                 icon: (
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
                   </svg>
                 )
@@ -1239,12 +1493,40 @@ function App() {
                 key={m.id}
                 type="button"
                 className={`ac-mode-segmented-btn ${acMode === m.id ? 'active' : ''}`}
-                onClick={() => handleAcControl({ mode: m.id })}
+                onClick={() => {
+                  const currentActive = Boolean(devices.find(d => d.id === 'ac_funiki')?.active);
+                  handleAcControl({ mode: m.id, keepPower: currentActive });
+                }}
               >
                 <span className="mode-icon-svg">{m.icon}</span>
                 <span className="mode-label">{m.label}</span>
               </button>
             ))}
+          </div>
+
+          {/* Tốc độ quạt gió dàn lạnh âm trần */}
+          <div className="ac-fan-row">
+            <span className="ac-fan-label">💨 Gió dàn lạnh:</span>
+            <div className="ac-fan-segmented">
+              {[
+                { id: 'auto', label: 'Tự động' },
+                { id: 'low', label: 'Nhẹ' },
+                { id: 'medium', label: 'Vừa' },
+                { id: 'high', label: 'Mạnh' },
+              ].map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  className={`ac-fan-btn ${acFan === f.id ? 'active' : ''}`}
+                  onClick={() => {
+                    const currentActive = Boolean(devices.find(d => d.id === 'ac_funiki')?.active);
+                    handleAcControl({ fan: f.id, keepPower: currentActive });
+                  }}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </section>
@@ -1272,13 +1554,29 @@ function App() {
         </section>
       )}
 
-      {/* MODAL: GIAO THỨC ĐIỀU HÒA (Contracts 3.8) */}
+      {/* MODAL: GIAO THỨC ĐIỀU HÒA ÂM TRẦN (Contracts 3.8) */}
       {showAcSetup && (
         <AcSetupModal
-          acDevice={{ id: 'ac_funiki', name: devices.find(d => d.id === 'ac_funiki')?.name || 'Điều hòa' }}
-          acState={{ temp: acTemp, mode: acMode }}
+          acDevice={devices.find(d => d.id === 'ac_funiki') || devices.find(d => d.type === 'ac') || { id: 'ac_funiki', name: 'Điều hòa Âm trần Daikin' }}
+          acState={{ temp: acTemp, mode: acMode, fan: acFan }}
+          initialProtocol={acProtocol}
           onClose={() => setShowAcSetup(false)}
-          onSaved={setAcProtocol}
+          onSaved={(proto) => {
+            setAcProtocol(proto);
+            localStorage.setItem('smart_home_ac_protocol', proto);
+            setDevices(prev => prev.map(d => (d.id === 'ac_funiki' || d.type === 'ac') ? {
+              ...d,
+              name: proto.startsWith('DAIKIN')
+                ? 'Điều hòa Âm trần Daikin'
+                : proto.startsWith('PANASONIC')
+                  ? 'Điều hòa Âm trần Panasonic'
+                  : proto.startsWith('MITSUBISHI')
+                    ? 'Điều hòa Âm trần Mitsubishi'
+                    : proto === 'COOLIX'
+                      ? 'Điều hòa Funiki / Casper'
+                      : `Điều hòa (${proto})`
+            } : d));
+          }}
           onNotify={showNotification}
         />
       )}
@@ -1365,6 +1663,18 @@ function App() {
             </div>
 
             <form onSubmit={handleAssignCodeSubmit} className="modal-form-body">
+              <div className="input-with-label">
+                <span className="input-micro-label">Gán vào thiết bị nào</span>
+                <select
+                  className="form-text-input"
+                  value={assignDeviceId}
+                  onChange={(e) => setAssignDeviceId(e.target.value)}
+                >
+                  <option value="ac_funiki">Điều hòa Daikin (Phòng khách)</option>
+                  <option value="tv_living">Tivi LG (Phòng khách)</option>
+                </select>
+              </div>
+
               <div className="input-with-label">
                 <span className="input-micro-label">Tên nút hiển thị</span>
                 <input
@@ -1528,15 +1838,59 @@ function App() {
                     <select
                       className="form-text-input"
                       value={selectedDeviceId}
-                      onChange={(e) => setSelectedDeviceId(e.target.value)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setSelectedDeviceId(val);
+                        localStorage.setItem('selected_audio_device', val);
+                      }}
                     >
-                      <option value="">-- Mặc định hệ thống --</option>
-                      {audioDevices.map((d) => (
-                        <option key={d.deviceId} value={d.deviceId}>
-                          {d.label || `Microphone (${d.deviceId.slice(0, 8)})`}
-                        </option>
-                      ))}
+                      {audioDevices.map((d) => {
+                        const isBad = isVirtualOrUnwantedMic(d.label);
+                        const isDefault = d.deviceId === 'default';
+                        let prefix = '🎙 ';
+                        if (isBad) prefix = '⚠️ [Micro ảo/DeskIn - Không nên chọn] ';
+                        else if (d.label && (d.label.toLowerCase().includes('array') || d.label.toLowerCase().includes('realtek'))) {
+                          prefix = '⭐ [Micro phần cứng khuyên dùng] ';
+                        }
+                        return (
+                          <option key={d.deviceId} value={d.deviceId}>
+                            {prefix}{d.label || (isDefault ? 'Mặc định hệ thống Windows' : `Microphone (${d.deviceId.slice(0, 8)})`)}
+                          </option>
+                        );
+                      })}
                     </select>
+                  </div>
+
+                  <div style={{ marginTop: '10px' }}>
+                    <button
+                      type="button"
+                      className={`form-action-btn full-width ${isTestingMic ? 'danger' : ''}`}
+                      onClick={handleToggleTestMic}
+                    >
+                      {isTestingMic ? '⏹ Dừng kiểm tra Micro' : '🎙 Bấm để thử nói kiểm tra Micro'}
+                    </button>
+
+                    {isTestingMic && (
+                      <div style={{ marginTop: '8px', padding: '10px', background: 'var(--surface-color)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', marginBottom: '6px' }}>
+                          <span>Mức âm lượng thu được:</span>
+                          <strong style={{ color: testLiveVol > 10 ? '#10b981' : '#f59e0b' }}>{testLiveVol}%</strong>
+                        </div>
+                        <div style={{ height: '10px', background: 'rgba(0,0,0,0.1)', borderRadius: '5px', overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${testLiveVol}%`, background: testLiveVol > 15 ? '#10b981' : '#f59e0b', transition: 'width 0.08s ease' }} />
+                        </div>
+                        <p style={{ fontSize: '12px', color: 'var(--secondary-text)', marginTop: '6px', marginBottom: 0 }}>
+                          {testLiveVol > 10 ? '✅ Micro đang bắt tiếng rất tốt!' : '⚠️ Hãy nói to vào mic hoặc chọn thiết bị khác trong danh sách phía trên.'}
+                        </p>
+                      </div>
+                    )}
+
+                    {testRecordedAudioUrl && (
+                      <div style={{ marginTop: '8px' }}>
+                        <span style={{ fontSize: '12px', color: 'var(--secondary-text)' }}>Nghe lại tiếng vừa thu:</span>
+                        <audio src={testRecordedAudioUrl} controls style={{ width: '100%', marginTop: '4px', height: '36px' }} />
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

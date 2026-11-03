@@ -1073,11 +1073,58 @@ body {
   color: var(--primary-dark);
 }
 
-/* Segmented Mode Selector */
+/* Ceiling AC Toggle & Sync Utility Row */
+.ac-ceiling-tools-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.ac-tool-pill-btn {
+  height: 34px;
+  border-radius: 11px;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 8px;
+  transition: all 0.18s ease;
+}
+
+.ac-tool-pill-btn.toggle-pulse {
+  background: #ECFDF5;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: #047857;
+}
+
+.ac-tool-pill-btn.toggle-pulse:hover {
+  background: #D1FAE5;
+}
+
+.ac-tool-pill-btn.sync-state {
+  background: #F8FAFC;
+  border: 1px solid #CBD5E1;
+  color: #475569;
+}
+
+.ac-tool-pill-btn.sync-state:hover {
+  background: #EEF2F6;
+  color: var(--text-main);
+}
+
+.ac-tool-pill-btn:active {
+  transform: scale(0.96);
+}
+
+/* Segmented Mode Selector (5 modes: Cool, Dry, Fan, Heat, Auto) */
 .ac-modes-segmented {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
   background: #EEF2F6;
   padding: 5px;
   border-radius: 16px;
@@ -1085,19 +1132,66 @@ body {
 }
 
 .ac-mode-segmented-btn {
-  height: 42px;
+  height: 40px;
   border: none;
-  border-radius: 12px;
+  border-radius: 11px;
   background: transparent;
   color: #64748B;
-  font-size: 12.5px;
+  font-size: 11.5px;
   font-weight: 600;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 3px;
+  padding: 0 2px;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Fan Speed Selector for Ceiling Cassette */
+.ac-fan-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ac-fan-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.ac-fan-segmented {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  background: #F1F5F9;
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid #E2E8F0;
+}
+
+.ac-fan-btn {
+  height: 30px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: #64748B;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.ac-fan-btn.active {
+  background: #FFFFFF;
+  color: var(--primary-dark);
+  font-weight: 800;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.07);
 }
 
 .ac-mode-segmented-btn .mode-icon-svg {
@@ -1667,4 +1761,66 @@ body {
   font-size: 13px;
   font-weight: 700;
   color: var(--text-muted);
+}
+
+.ac-setup-filter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ac-filter-chip-btn {
+  border: 1px solid #CBD5E1;
+  background: #F8FAFC;
+  color: #475569;
+  border-radius: 99px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ac-filter-chip-btn.active {
+  background: #ECFDF5;
+  border-color: #10B981;
+  color: #047857;
+}
+
+.ac-setup-name-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ac-setup-code-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.ac-setup-name-col .ac-setup-name {
+  flex: 0 1 auto;
+}
+
+.ac-proto-tag {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 6px;
+  line-height: 1.4;
+}
+
+.ac-proto-tag.ceiling {
+  background: #DBEAFE;
+  color: #1D4ED8;
+}
+
+.ac-proto-tag.toggle {
+  background: #FEF3C7;
+  color: #B45309;
 }

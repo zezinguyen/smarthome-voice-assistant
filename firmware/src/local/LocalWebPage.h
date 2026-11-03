@@ -93,22 +93,24 @@ function protoOptions(sel,current){
   protos.all.filter(p=>!protos.candidates.includes(p)).forEach(p=>g2.append(el('option',{value:p,textContent:p})));
   sel.append(g1,g2);if(current)sel.value=current;
 }
-function acDevices(){return Object.entries(profile.devices||{}).filter(([,d])=>d.irac_protocol)}
+function acDevices(){const entries=Object.entries(profile.devices||{}).filter(([,d])=>d.irac_protocol);
+  return entries.length>1&&entries.some(([k])=>k==='ac_funiki')?entries.filter(([k])=>k!=='ac_living'):entries}
 function keyDevices(){return Object.entries(profile.devices||{}).filter(([,d])=>!d.irac_protocol)}
 
 function renderAc(){
   const box=$('acs');box.innerHTML='';
   acDevices().forEach(([id,d])=>{
-    const s=acState[id]||(acState[id]=load('ac:'+id,{power:true,temp:25,mode:'cool',fan:'auto'}));
+    const s=acState[id]||(acState[id]=load('ac:'+id,{power:false,temp:24,mode:'cool',fan:'auto'}));
     const min=(d.limits&&d.limits.temp_min)||16,max=(d.limits&&d.limits.temp_max)||30;
     const sel=el('select',{'aria-label':'Giao thức'});protoOptions(sel,d.irac_protocol);
-    sel.onchange=async()=>{const r=await api('/api/ac/protocol',{deviceId:id,protocol:sel.value});toast(r.ok?'Đã đổi sang '+sel.value:errText(r.error),!r.ok)};
+    sel.onchange=async()=>{const r=await api('/api/ac/protocol',{deviceId:id,protocol:sel.value});if(r.ok)d.irac_protocol=sel.value;toast(r.ok?'Đã đổi sang '+sel.value:errText(r.error),!r.ok)};
     const t=el('b',{textContent:s.temp});
-    const send=async(power)=>{s.power=power;store('ac:'+id,s);paint();
-      const r=await api('/api/command',{deviceId:id,action:'SET',params:{power:s.power,temp:s.temp,mode:s.mode,fan:s.fan}});
-      toast(r.ok?(s.power?'Đã gửi: '+s.temp+'°C · '+label(MODES,s.mode)+' · quạt '+label(FANS,s.fan).toLowerCase():'Đã gửi: Tắt'):errText(r.error),!r.ok)};
-    let timer;const later=()=>{clearTimeout(timer);timer=setTimeout(()=>send(true),400)};
-    const on=el('button',{textContent:'Bật',onclick:()=>send(true)}),off=el('button',{textContent:'Tắt',onclick:()=>send(false)});
+    const send=async(power,act,extra={})=>{s.power=power;store('ac:'+id,s);paint();
+      const r=await api('/api/command',{deviceId:id,action:act||(power?'SET':'POWER_OFF'),params:{power:s.power,temp:s.temp,mode:s.mode,fan:s.fan,...extra}});
+      toast(r.ok?(act==='SYNC_POWER'?'Đã đồng bộ trạng thái '+(s.power?'Đang Bật':'Đã Tắt')+' (không phát IR)':(s.power?'Đã gửi: '+s.temp+'°C · '+label(MODES,s.mode)+' · quạt '+label(FANS,s.fan).toLowerCase():'Đã gửi: Tắt')):errText(r.error),!r.ok)};
+    let timer;const later=()=>{const keep=Boolean(s.power);clearTimeout(timer);timer=setTimeout(()=>send(true,'SET',{keepPower:keep}),350)};
+    const on=el('button',{textContent:'Bật',onclick:()=>send(true,'POWER_ON',{forceToggle:true})}),off=el('button',{textContent:'Tắt',onclick:()=>send(false,'POWER_OFF',{forceToggle:true})});
+    const sync=el('button',{textContent:'⇄ Đồng bộ',title:'Khớp lại trạng thái Bật/Tắt khi vừa bấm remote vật lý (không phát IR)',onclick:()=>send(!s.power,'SYNC_POWER')});
     const down=el('button',{textContent:'−','aria-label':'Giảm nhiệt độ',onclick:()=>{if(s.temp>min){s.temp--;paint();later()}}});
     const up=el('button',{textContent:'+','aria-label':'Tăng nhiệt độ',onclick:()=>{if(s.temp<max){s.temp++;paint();later()}}});
     const segs=(list,key)=>{const w=el('div',{className:'seg'});list.forEach(([v,n])=>w.append(el('button',{textContent:n,onclick:()=>{s[key]=v;paint();later()},dataset:{v}})));w.dataset.key=key;return w};
@@ -118,9 +120,9 @@ function renderAc(){
     paint();
     box.append(el('section',{className:'card'},
       el('div',{className:'row',style:'justify-content:space-between'},el('h2',{textContent:d.name||id,style:'margin:0'}),sel),
-      el('div',{className:'temp'},down,t,el('span',{textContent:'°C',className:'muted'}),up,el('div',{className:'row',style:'margin-left:auto'},on,off)),
+      el('div',{className:'temp'},down,t,el('span',{textContent:'°C',className:'muted'}),up,el('div',{className:'row',style:'margin-left:auto'},on,off,sync)),
       el('h3',{textContent:'Chế độ'}),modeSeg,el('h3',{textContent:'Quạt'}),fanSeg,
-      el('p',{className:'muted',textContent:'Mỗi lần đổi, mạch gửi cả trạng thái (như remote thật). Máy không phản hồi thì đổi giao thức ở góc trên hoặc dùng phần "Tìm giao thức".'})));
+      el('p',{className:'muted',textContent:'Hỗ trợ điều hòa âm trần Toggle nguồn (DAIKIN64 BRC52A62): đổi nhiệt độ/chế độ không làm tắt máy. Nếu vừa bấm remote thật, bấm "⇄ Đồng bộ".'})));
   });
 }
 const label=(list,v)=>(list.find(x=>x[0]===v)||[,v])[1];

@@ -10,7 +10,7 @@ export function getIotConfig() {
   return {
     autoSend: localStorage.getItem('iot_auto_send') !== 'false',
     tvBrand: localStorage.getItem('iot_tv_brand') || 'LG',
-    acBrand: localStorage.getItem('iot_ac_brand') || 'Panasonic'
+    acBrand: localStorage.getItem('iot_ac_brand') || 'Daikin'
   };
 }
 
@@ -54,8 +54,9 @@ export function getHomeRealtimeChannel(supabase, homeId = '00000000-0000-0000-00
 
   if (homeChannels.has(channelKey)) {
     const existing = homeChannels.get(channelKey);
-    // Kiểm tra nếu kênh còn hoạt động
-    if (existing.state !== 'closed' && existing.state !== 'errored') {
+    const stillAttached = !Array.isArray(supabase.channels) || supabase.channels.includes(existing);
+    // Kiểm tra nếu kênh còn hoạt động và chưa bị removeChannel bởi StrictMode cleanup
+    if (stillAttached && existing.state !== 'closed' && existing.state !== 'errored' && existing.state !== 'leaving') {
       return existing;
     }
     homeChannels.delete(channelKey);
@@ -63,15 +64,18 @@ export function getHomeRealtimeChannel(supabase, homeId = '00000000-0000-0000-00
 
   const channel = supabase.channel(channelKey, {
     config: {
-      broadcast: { self: false }
+      broadcast: { self: false },
+      presence: { enabled: true }
     }
   });
 
-  channel.subscribe((status) => {
-    if (status === 'SUBSCRIBED') {
-      console.log(`[IOT] Đã kết nối kênh Realtime ${channelKey}`);
-    }
-  });
+  if (channel && channel.state !== 'joined' && channel.state !== 'joining') {
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        console.log(`[IOT] Đã kết nối kênh Realtime ${channelKey}`);
+      }
+    });
+  }
 
   homeChannels.set(channelKey, channel);
   return channel;
@@ -107,22 +111,46 @@ export async function sendIotCommand(command, options = {}) {
   const action = TV_POWER_ALIASES.has(command.action) ? 'POWER' : command.action;
   const clientRequestId = options.clientRequestId || generateRequestId();
 
-  // Chuẩn bị params cho điều hòa hoặc thiết bị khác
+  // Chuẩn bị params cho điều hòa âm trần / treo tường hoặc thiết bị khác
   const params = {};
   if (command.temp !== undefined) params.temp = command.temp;
   if (command.mode !== undefined) params.mode = command.mode;
   if (command.fan !== undefined) params.fan = command.fan;
   if (command.power !== undefined) params.power = command.power;
+  if (command.forceToggle !== undefined) params.forceToggle = Boolean(command.forceToggle);
+  if (command.keepPower !== undefined) params.keepPower = Boolean(command.keepPower);
+  if (command.protocol) params.protocol = command.protocol;
+  if (command.ir && typeof command.ir === 'object') params.ir = command.ir;
   if (command.action === 'POWER_OFF' || command.action === 'TV_POWER_OFF') params.power = false;
   if (command.action === 'POWER_ON' || command.action === 'TV_POWER_ON') params.power = true;
 
   console.log(`[IOT] Gửi lệnh: Device=${deviceId}, Action=${action}, ReqId=${clientRequestId}`);
 
+  const persistAcStateIfNeeded = (finalParams = params) => {
+    const isAcCmd = deviceId.startsWith('ac_') || finalParams.temp !== undefined || finalParams.mode !== undefined;
+    if (!isAcCmd || typeof supabase?.from !== 'function') return;
+    const statePatch = { updated_at: new Date().toISOString() };
+    if (finalParams.power !== undefined) statePatch.power = Boolean(finalParams.power);
+    if (finalParams.temp !== undefined) statePatch.temp = Number(finalParams.temp);
+    if (finalParams.mode !== undefined) statePatch.mode = finalParams.mode;
+    if (finalParams.fan !== undefined) statePatch.fan = finalParams.fan;
+    try {
+      const q = supabase.from('device_state')?.update?.(statePatch)?.eq?.('device_id', deviceId);
+      if (q && typeof q.then === 'function') q.then(() => {}, () => {});
+    } catch { /* bỏ qua nếu môi trường test mock giới hạn */ }
+  };
+
   try {
     let commandId = null;
     let seq = Date.now() % 1000000000;
-    let expiresAt = Date.now() + 10000;
+    let expiresAt = Date.now() + 60000;
     let fullParams = params;
+
+    // Kiểm tra xem mạch ESP32 có đang hiện diện trực tiếp trên kênh Realtime home:<homeId> hay không
+    const liveChannel = homeChannels.get(`home:${homeId}`) ||
+      (Array.isArray(supabase.channels) && supabase.channels.find((c) => c.topic === `realtime:home:${homeId}`));
+    const presenceMap = liveChannel?.presenceState?.() || {};
+    const hasLivePresence = Object.keys(presenceMap).some((k) => Array.isArray(presenceMap[k]) && presenceMap[k].length > 0);
 
     // 1. Thử gọi RPC send_command trên Supabase
     const { data, error } = await supabase.rpc('send_command', {
@@ -136,16 +164,17 @@ export async function sendIotCommand(command, options = {}) {
       commandId = data.commandId;
       seq = data.seq || seq;
       expiresAt = data.expiresAt || expiresAt;
-      fullParams = data.params || params;
+      // Giữ lại các trường mở rộng của điều hòa âm trần (protocol, forceToggle, keepPower, ir) nếu RPC cũ lọc bớt
+      fullParams = data.params ? { ...data.params, ...params } : params;
     } else {
-      if (data && data.error === 'E_BOARD_OFFLINE' && !options.force) {
+      if (data && data.error === 'E_BOARD_OFFLINE' && !options.force && !hasLivePresence) {
         return {
           success: false,
           isOffline: true,
           message: 'Mạch điều khiển đang ngoại tuyến (Offline). Vui lòng kiểm tra nguồn và WiFi của ESP32.'
         };
       }
-      // Nếu RPC bị lỗi (ví dụ chưa chạy DB schema đầy đủ), tạo commandId fallback để vẫn gửi được qua Realtime
+      // Nếu RPC báo offline giả (do last_seen_at trễ hoặc lệch board_id) nhưng mạch đang online trên Realtime, vẫn phát thẳng qua WebSocket
       console.warn('[IOT] RPC send_command không phản hồi hoặc trả lỗi, sử dụng fallback Realtime:', error?.message || data?.error);
       commandId = generateRequestId();
     }
@@ -176,6 +205,7 @@ export async function sendIotCommand(command, options = {}) {
 
     if (ackResult.received) {
       if (ackResult.ok) {
+        persistAcStateIfNeeded(fullParams);
         return {
           success: true,
           commandId,
@@ -209,11 +239,16 @@ export async function sendIotCommand(command, options = {}) {
 
     const retryAck = await waitForCommandAck(supabase, commandId, homeId, 2500);
     if (retryAck.received && retryAck.ok) {
+      persistAcStateIfNeeded(fullParams);
       return {
         success: true,
         commandId,
         message: `Đã thực hiện lệnh [${command.title || action}] thành công (thử lại)!`
       };
+    }
+
+    if (action === 'SYNC_POWER') {
+      persistAcStateIfNeeded(fullParams);
     }
 
     return {

@@ -6,6 +6,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <ProfileEdit.h>
 
 #include "app/CommandHandler.h"
 #include "app/Feedback.h"
@@ -307,8 +308,18 @@ void setup() {
     if (display.begin()) {
         display.wake(millis());
     }
-    if (!deviceStore.begin() || !deviceStore.load()) {
-        log_w("Chua co profile thiet bi");
+    const bool fsMounted = deviceStore.begin();
+    if (!fsMounted || !deviceStore.load()) {
+        log_w("Chua co profile thiet bi, tao profile dieu hoa am tran mac dinh (%s)", DEFAULT_AC_PROTOCOL);
+        JsonDocument defaultDoc;
+        profileEnsureAc(defaultDoc, DEFAULT_AC_DEVICE_ID, DEFAULT_AC_DEVICE_NAME, DEFAULT_AC_PROTOCOL);
+        profileEnsureAc(defaultDoc, DEFAULT_AC_ALT_DEVICE_ID, DEFAULT_AC_DEVICE_NAME, DEFAULT_AC_PROTOCOL);
+        if (!fsMounted || !deviceStore.save(defaultDoc)) {
+            String defaultJson;
+            serializeJson(defaultDoc, defaultJson);
+            deviceStore.loadFromJson(defaultJson.c_str(), defaultJson.length());
+        }
+        // Đã nạp profile mặc định vào bộ nhớ
     }
     commandHandler.setResultHandler(onCommandResult);
     if (SERIAL_BRIDGE_ENABLED) {
@@ -328,7 +339,7 @@ void setup() {
     }
 #endif
 #if defined(DEFAULT_BOARD_ID) && defined(DEFAULT_HOME_ID)
-    if (!provisioning.isPaired() && strlen(DEFAULT_BOARD_ID) > 0) {
+    if (strlen(DEFAULT_BOARD_ID) > 0) {
 #if defined(DEFAULT_BOARD_TOKEN)
         const char* token = DEFAULT_BOARD_TOKEN;
 #else

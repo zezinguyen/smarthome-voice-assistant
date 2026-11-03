@@ -12,8 +12,14 @@
     },
     "ac_living": {
       "type": "ac",
-      "name": "Điều hòa phòng khách",
-      "irac_protocol": "PANASONIC_AC",
+      "name": "Điều hòa âm trần Daikin",
+      "irac_protocol": "DAIKIN64",
+      "limits": { "temp_min": 16, "temp_max": 30 }
+    },
+    "ac_funiki": {
+      "type": "ac",
+      "name": "Điều hòa âm trần Daikin",
+      "irac_protocol": "DAIKIN64",
       "limits": { "temp_min": 16, "temp_max": 30 }
     }
   }

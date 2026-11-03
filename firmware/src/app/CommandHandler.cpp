@@ -10,6 +10,11 @@ constexpr const char* kErrRateLimited = "E_RATE_LIMITED";
 constexpr const char* kErrBadRequest = "E_BAD_REQUEST";
 
 const char* nameOf(ErrorCode code) { return errorCodeName(code); }
+
+bool isDefaultAcId(const char* deviceId) {
+    return deviceId != nullptr &&
+           (strcmp(deviceId, DEFAULT_AC_DEVICE_ID) == 0 || strcmp(deviceId, DEFAULT_AC_ALT_DEVICE_ID) == 0);
+}
 }  // namespace
 
 CommandHandler::CommandHandler(DeviceStore& store, IrSender& sender, IrLearner& learner, ErrorReporter& errors,
@@ -72,8 +77,32 @@ const char* CommandHandler::runAction(const char* deviceId, const char* action, 
     if (learner_.isActive()) {
         return kErrBusy;  // Đang học lệnh thì không phát IR
     }
+    // Nút Remote ảo đã học mã IR trực tiếp (từ custom_remotes trên Cloud) -> ưu tiên phát thẳng mã IR đó
+    JsonObjectConst directIr = params["ir"];
+    if (!directIr.isNull()) {
+        const char* irError = sendIrCode(directIr);
+        ErrorCode irCode;
+        if (irError != nullptr && errorCodeFromName(irError, irCode)) {
+            errors_.report(irCode, deviceId, clock_.nowEpochSec());
+        }
+        return irError;
+    }
+
     JsonObjectConst device = store_.findDevice(deviceId);
-    const char* error = device.isNull() ? nameOf(ErrorCode::CmdNotFound) : sendDeviceCommand(device, action, params);
+    // Dự phòng khi profile trên LittleFS chỉ khai báo ac_living hoặc chưa nạp uploadfs
+    if (device.isNull() && isDefaultAcId(deviceId)) {
+        const char* altId = strcmp(deviceId, DEFAULT_AC_DEVICE_ID) == 0 ? DEFAULT_AC_ALT_DEVICE_ID : DEFAULT_AC_DEVICE_ID;
+        device = store_.findDevice(altId);
+    }
+
+    const char* error = nullptr;
+    if (!device.isNull()) {
+        error = sendDeviceCommand(device, action, params);
+    } else if (isDefaultAcId(deviceId)) {
+        error = sendAcCommand(DEFAULT_AC_PROTOCOL, AC_TEMP_MIN_DEFAULT, AC_TEMP_MAX_DEFAULT, action, params);
+    } else {
+        error = nameOf(ErrorCode::CmdNotFound);
+    }
 
     ErrorCode code;
     if (error != nullptr && errorCodeFromName(error, code)) {
@@ -170,14 +199,7 @@ const char* CommandHandler::sendDeviceCommand(JsonObjectConst device, const char
     if (acProtocol != nullptr) {
         const int16_t tempMin = device["limits"]["temp_min"] | AC_TEMP_MIN_DEFAULT;
         const int16_t tempMax = device["limits"]["temp_max"] | AC_TEMP_MAX_DEFAULT;
-        AcRequest request;
-        request.protocol = acProtocol;
-        request.power = strcmp(action, "POWER_OFF") != 0 && (params["power"] | true);
-        request.temperatureC = constrain(params["temp"] | 24, tempMin, tempMax);
-        request.mode = params["mode"] | "cool";
-        request.fan = params["fan"] | "auto";
-        // TODO: lưu trạng thái gần nhất vào NVS (spec 11)
-        return sender_.sendAc(request) ? nullptr : nameOf(ErrorCode::IrSendFail);
+        return sendAcCommand(acProtocol, tempMin, tempMax, action, params);
     }
 
     // Thiết bị "bấm nút": tra mã theo action
@@ -186,6 +208,46 @@ const char* CommandHandler::sendDeviceCommand(JsonObjectConst device, const char
         return nameOf(ErrorCode::CmdNotFound);
     }
     return sendIrCode(command);
+}
+
+const char* CommandHandler::sendAcCommand(const char* acProtocol, int16_t tempMin, int16_t tempMax,
+                                          const char* action, JsonObjectConst params) {
+    // Cho phép App chỉ định trực tiếp giao thức điều hòa vừa chọn (nếu hợp lệ)
+    const char* overrideProtocol = params["protocol"];
+    const char* effectiveProtocol =
+        (overrideProtocol != nullptr && IrSender::isAcProtocolSupported(overrideProtocol)) ? overrideProtocol
+                                                                                           : acProtocol;
+
+    const bool hasPowerParam = !params.isNull() && params["power"].is<bool>();
+    const bool powerParam = params["power"] | true;
+    const bool forceToggle = params["forceToggle"] | false;
+    const bool keepPower = params["keepPower"] | false;
+
+    const AcPowerDecision decision = acPower_.evaluate(action, hasPowerParam, powerParam, forceToggle, keepPower);
+    if (decision.syncOnly) {
+        acPower_.commit(action, decision.power);
+        log_i("AC sync trang thai nguon -> %s (khong phat IR)", decision.power ? "ON" : "OFF");
+        return nullptr;
+    }
+
+    AcRequest request;
+    request.protocol = effectiveProtocol;
+    request.power = decision.power;
+    request.temperatureC = constrain(params["temp"] | 24, tempMin, tempMax);
+    request.mode = params["mode"] | "cool";
+    request.fan = params["fan"] | "auto";
+    request.action = action;
+    request.powerToggle = decision.powerToggle;
+    request.skipToggleIr = decision.skipToggleIr;
+
+    const bool ok = sender_.sendAc(request);
+    if (ok) {
+        acPower_.commit(action, decision.power);
+        log_i("AC %s [%s]: power=%d toggle=%d temp=%.0f mode=%s fan=%s", effectiveProtocol, action,
+              request.power ? 1 : 0, request.powerToggle ? 1 : 0, request.temperatureC, request.mode, request.fan);
+        return nullptr;
+    }
+    return nameOf(ErrorCode::IrSendFail);
 }
 
 const char* CommandHandler::sendIrCode(JsonObjectConst command) {

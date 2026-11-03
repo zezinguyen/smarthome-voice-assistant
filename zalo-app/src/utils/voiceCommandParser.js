@@ -177,9 +177,23 @@ export function parseVoiceCommand(text, customRemotes = []) {
   }
 
   // 1. Phân tích lệnh Điều hòa (AC Commands - Specs 6.2, Contracts 3.3)
-  const isAcMention = lower.includes('điều hòa') || lower.includes('dieu hoa') || 
+  const standaloneTempMatch = lower.match(/(?:cho|đặt|bật|hạ|tăng|xuống|lên|mở)?\s*(\d{1,2})\s*(?:độ|do|c)(?:\b|\s|$)/i) ||
+                              lower.match(/(?:^|\s)(\d{1,2})\s*(?:độ|do|c)(?:\b|\s|$)/i);
+  const isComfortPhrase = lower.includes('nóng quá') || lower.includes('nong qua') || 
+                          lower.includes('lạnh quá') || lower.includes('lanh qua') ||
+                          lower.includes('nóng thế') || lower.includes('lạnh thế') ||
+                          lower.includes('trời nóng') || lower.includes('trời lạnh') ||
+                          lower.includes('phòng nóng') || lower.includes('phòng lạnh') ||
+                          lower.includes('nực quá') || lower.includes('oi bức');
+  const isAcMention = lower.includes('điều hòa') || lower.includes('điều hoà') || 
+                      lower.includes('dieu hoa') || noTone.includes('dieu hoa') ||
                       lower.includes('máy lạnh') || lower.includes('may lanh') ||
-                      lower.includes('máy điều hòa') || lower.includes('nhiệt độ');
+                      noTone.includes('may lanh') ||
+                      lower.includes('máy điều hòa') || lower.includes('máy điều hoà') ||
+                      lower.includes('âm trần') || noTone.includes('am tran') ||
+                      lower.includes('cassette') || lower.includes('daikin') ||
+                      lower.includes('nhiệt độ') || noTone.includes('nhiet do') ||
+                      Boolean(standaloneTempMatch) || isComfortPhrase;
 
   if (isAcMention) {
     // Tắt điều hòa
@@ -195,35 +209,93 @@ export function parseVoiceCommand(text, customRemotes = []) {
       };
     }
 
-    // Đặt nhiệt độ cụ thể (VD: "bật điều hòa 24 độ", "đặt 26 độ", "10 độ" -> kẹp 16-30 độ)
-    const tempMatch = lower.match(/(?:đặt|bật|cho|xuống|lên)?\s*(\d{1,2})\s*(?:độ|do|c)/i);
+    // Cảm thán nhiệt độ nóng/lạnh tự nhiên
+    if (lower.includes('nóng quá') || lower.includes('nong qua') || lower.includes('nóng thế') || lower.includes('nực quá')) {
+      return {
+        action: 'SET',
+        title: 'Bật điều hòa 22°C (Làm mát)',
+        deviceId: 'ac_funiki',
+        device: 'Điều hòa (Hồng ngoại)',
+        power: true,
+        temp: 22,
+        mode: 'cool',
+        fan: 'high',
+        icon: '❄️',
+        description: 'Làm mát nhanh khi phòng quá nóng'
+      };
+    }
+    if (lower.includes('lạnh quá') || lower.includes('lanh qua') || lower.includes('lạnh thế')) {
+      return {
+        action: 'SET',
+        title: 'Tăng điều hòa lên 26°C',
+        deviceId: 'ac_funiki',
+        device: 'Điều hòa (Hồng ngoại)',
+        power: true,
+        temp: 26,
+        mode: 'cool',
+        fan: 'low',
+        icon: '❄️',
+        description: 'Tăng nhiệt độ khi phòng quá lạnh'
+      };
+    }
+
+    // Đặt nhiệt độ cụ thể (VD: "bật điều hòa 24 độ", "đặt 26 độ", "24 độ" -> kẹp 16-30 độ)
+    const tempMatch = standaloneTempMatch || lower.match(/(?:đặt|bật|cho|xuống|lên|mở|hạ|tăng)?\s*(\d{1,2})\s*(?:độ|do|c)/i);
     let targetTemp = 24;
+    let hasExplicitTemp = false;
     if (tempMatch && tempMatch[1]) {
+      hasExplicitTemp = true;
       const parsedTemp = parseInt(tempMatch[1], 10);
-      if (parsedTemp < 16) {
+      if (parsedTemp >= 16 && parsedTemp <= 30) {
+        targetTemp = parsedTemp;
+      } else if (parsedTemp < 16) {
         targetTemp = 16;
       } else if (parsedTemp > 30) {
         targetTemp = 30;
-      } else {
-        targetTemp = parsedTemp;
       }
+    } else if (lower.includes('hạ') || lower.includes('giảm') || lower.includes('mát hơn')) {
+      hasExplicitTemp = true;
+      targetTemp = 22;
+    } else if (lower.includes('tăng') || lower.includes('ấm hơn')) {
+      hasExplicitTemp = true;
+      targetTemp = 26;
     }
 
     // Chế độ (mode)
     let acMode = 'cool';
-    if (lower.includes('hút ẩm') || lower.includes('kho') || lower.includes('dry')) acMode = 'dry';
-    else if (lower.includes('chế độ quạt') || lower.includes('chỉ quạt') || lower.includes('bật quạt điều hòa')) acMode = 'fan';
-    else if (lower.includes('sưởi') || lower.includes('nóng') || lower.includes('heat')) acMode = 'heat';
-    else if (lower.includes('tự động') || lower.includes('auto')) acMode = 'auto';
+    let hasExplicitMode = false;
+    if (lower.includes('hút ẩm') || lower.includes('khô') || noTone.includes('hut am') || lower.includes('dry')) {
+      acMode = 'dry';
+      hasExplicitMode = true;
+    } else if (lower.includes('chế độ quạt') || lower.includes('chỉ quạt') || lower.includes('bật quạt điều hòa')) {
+      acMode = 'fan';
+      hasExplicitMode = true;
+    } else if (lower.includes('sưởi') || lower.includes('heat')) {
+      acMode = 'heat';
+      hasExplicitMode = true;
+    } else if (lower.includes('tự động') || lower.includes('auto')) {
+      acMode = 'auto';
+      hasExplicitMode = true;
+    } else if (lower.includes('làm lạnh') || lower.includes('làm mát') || lower.includes('cool')) {
+      acMode = 'cool';
+      hasExplicitMode = true;
+    }
 
     // Tốc độ quạt (fan speed)
     let acFan = 'auto';
+    let hasExplicitFan = false;
     if (lower.includes('quạt mạnh') || lower.includes('gió mạnh') || lower.includes('quat manh') || lower.includes('gio manh') || lower.includes('quạt lớn') || lower.includes('fan high')) {
       acFan = 'high';
+      hasExplicitFan = true;
     } else if (lower.includes('quạt nhẹ') || lower.includes('gió nhẹ') || lower.includes('quat nhe') || lower.includes('gio nhe') || lower.includes('quạt êm') || lower.includes('quạt nhỏ') || lower.includes('fan low')) {
       acFan = 'low';
+      hasExplicitFan = true;
     } else if (lower.includes('quạt vừa') || lower.includes('gió vừa') || lower.includes('quat vua') || lower.includes('gio vua') || lower.includes('fan med')) {
-      acFan = 'med';
+      acFan = 'medium';
+      hasExplicitFan = true;
+    } else if (lower.includes('quạt tự động') || lower.includes('gió tự động') || lower.includes('fan auto')) {
+      acFan = 'auto';
+      hasExplicitFan = true;
     }
 
     return {
@@ -233,6 +305,9 @@ export function parseVoiceCommand(text, customRemotes = []) {
       device: 'Điều hòa (Hồng ngoại)',
       power: true,
       temp: targetTemp,
+      hasExplicitTemp,
+      hasExplicitMode,
+      hasExplicitFan,
       mode: acMode,
       fan: acFan,
       icon: '❄️',
@@ -278,7 +353,7 @@ export function parseVoiceCommand(text, customRemotes = []) {
   // Mẫu: Nhạc, karaoke, clip, phim, hài (kể cả không nói từ youtube)
   if (!extractedChannel) {
     const musicMatch = text.match(/^(?:mở|bật|nghe|cho nghe|cho coi|cho xem|tìm|kiếm|hát)\s+(nhạc\s+[^,.]+|ca nhạc\s+[^,.]+|karaoke\s+[^,.]+|cải lương\s+[^,.]+|hài\s+[^,.]+|phim\s+[^,.]+|video\s+[^,.]+|clip\s+[^,.]+)/i);
-    if (musicMatch && musicMatch[1] && !lower.includes('tivi') && !lower.includes('đài') && !lower.includes('điều hòa')) {
+    if (musicMatch && musicMatch[1] && !lower.includes('tivi') && !lower.includes('đài') && !lower.includes('điều hòa') && !lower.includes('điều hoà')) {
       extractedChannel = musicMatch[1].trim();
     }
   }
@@ -288,7 +363,11 @@ export function parseVoiceCommand(text, customRemotes = []) {
       .replace(/\s+(?:cho\s+tao|cho\s+tôi|cho\s+em|cho\s+anh|giúp|dùm|giùm|với|nhé|nha|đi|coi|xem)$/gi, '')
       .trim();
 
-    if (extractedChannel.length > 1 && !['youtube', 'yt', 'du tup', 'du túp'].includes(extractedChannel.toLowerCase())) {
+    const lowerChan = extractedChannel.toLowerCase();
+    const isExplicitYoutube = lower.includes('youtube') || lower.includes('yt') || noTone.includes('du tup') || noTone.includes('vo tup');
+    const isTvBroadcast = !isExplicitYoutube && (lowerChan.includes('vtv') || lowerChan.includes('htv') || lowerChan.includes('thời sự') || lowerChan.includes('truyền hình'));
+
+    if (!isTvBroadcast && extractedChannel.length > 1 && !['youtube', 'yt', 'du tup', 'du túp'].includes(lowerChan)) {
       const cleanTitle = extractedChannel.charAt(0).toUpperCase() + extractedChannel.slice(1);
       return {
         action: 'YOUTUBE_SEARCH',
@@ -343,10 +422,10 @@ export function parseVoiceCommand(text, customRemotes = []) {
   if (hasMute) {
     return IR_COMMANDS.find(c => c.action === 'MUTE');
   }
-  if (hasOff && (hasTV || lower.includes('tắt') || lower.includes('nghỉ') || lower.includes('đi ngủ') || lower.includes('thôi'))) {
+  if (hasOff && (hasTV || lower.includes('tivi') || lower.includes('tv') || lower.includes('đài') || lower.includes('màn hình') || lower.includes('vô tuyến') || lower.includes('nghỉ coi') || lower.includes('thôi coi'))) {
     return IR_COMMANDS.find(c => c.action === 'TV_POWER_OFF');
   }
-  if (hasOn && (hasTV || lower.includes('bật') || lower.includes('mở') || lower.includes('xem') || lower.includes('coi'))) {
+  if (hasOn && (hasTV || lower.includes('tivi') || lower.includes('tv') || lower.includes('đài') || lower.includes('màn hình') || lower.includes('vô tuyến') || lower.includes('xem tivi') || lower.includes('coi tivi'))) {
     return IR_COMMANDS.find(c => c.action === 'TV_POWER_ON');
   }
 

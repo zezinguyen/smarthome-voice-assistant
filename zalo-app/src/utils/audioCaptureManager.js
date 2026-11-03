@@ -6,65 +6,104 @@
 
 // Tính toán âm lượng người nói (Voice Volume 0-100) kết hợp FFT và Time-Domain
 export function calculateVoiceVolume(dataArray, timeData = null) {
-  if (!dataArray || dataArray.length === 0) return 0;
+  if ((!dataArray || dataArray.length === 0) && (!timeData || timeData.length === 0)) return 0;
+
   let peak = 0;
   let voiceSum = 0;
-  const voiceBins = Math.min(dataArray.length, 48);
+  const voiceBins = dataArray ? Math.min(dataArray.length, 48) : 0;
   for (let i = 0; i < voiceBins; i++) {
     if (dataArray[i] > peak) peak = dataArray[i];
     voiceSum += dataArray[i];
   }
   const voiceAvg = voiceBins > 0 ? voiceSum / voiceBins : 0;
-  let scaled = (voiceAvg * 0.4 + peak * 0.6) / 1.8;
+  let scaled = (voiceAvg * 0.5 + peak * 0.5) / 1.3;
 
-  // Nếu có dữ liệu sóng thời gian (timeData) và có năng lượng trong dải giọng nói
-  if (timeData && timeData.length > 0 && (peak > 8 || voiceAvg > 4)) {
+  // Nếu không có năng lượng trong dải FFT và cũng không có timeData thì xem như không có tiếng
+  if (peak === 0 && voiceAvg === 0 && (!timeData || timeData.length === 0)) {
+    return 0;
+  }
+
+  // Nếu có dữ liệu sóng thời gian (timeData), tính độ lệch âm lượng tức thời kết hợp
+  if (timeData && timeData.length > 0) {
     let timePeak = 0;
+    let timeSumSq = 0;
     for (let i = 0; i < timeData.length; i++) {
       const dev = Math.abs(timeData[i] - 128);
       if (dev > timePeak) timePeak = dev;
+      timeSumSq += dev * dev;
     }
-    const timeScaled = (timePeak / 128) * 100 * 2.5;
-    scaled = Math.max(scaled, timeScaled);
-  }
-
-  // Nếu năng lượng chỉ ở dải tần số cao ngoài giọng nói (> bin 48) mà không có giọng nói
-  if (peak === 0 && voiceAvg === 0) {
-    return 0;
+    const timeRms = Math.sqrt(timeSumSq / timeData.length);
+    if (timePeak > 2) {
+      const timeScaled = Math.min(100, Math.round((timeRms * 2.2 + timePeak * 0.8) * 1.5));
+      scaled = Math.max(scaled, timeScaled);
+    }
   }
 
   return Math.min(100, Math.round(scaled));
 }
 
 // Trích xuất các dải tần số âm thanh (Voice Frequency Spectrum Bands: 0-100) cho sóng âm động
-export function getFrequencyBands(dataArray, numBands = 20) {
-  if (!dataArray || dataArray.length === 0) {
+export function getFrequencyBands(dataArray, numBands = 20, timeData = null) {
+  if ((!dataArray || dataArray.length === 0) && (!timeData || timeData.length === 0)) {
     return new Array(numBands).fill(0);
   }
-  const voiceBins = Math.min(dataArray.length, 48);
-  const binStep = Math.max(1, Math.floor(voiceBins / numBands));
+  const voiceBins = dataArray ? Math.min(dataArray.length, 48) : 0;
+  const binStep = Math.max(1, Math.floor((voiceBins || 48) / numBands));
   const bands = [];
 
-  for (let b = 0; b < numBands; b++) {
-    const start = b * binStep;
-    const end = Math.min(voiceBins, start + binStep);
-    let sum = 0;
-    let peak = 0;
-    let count = 0;
-    for (let i = start; i < end; i++) {
-      if (dataArray[i] > peak) peak = dataArray[i];
-      sum += dataArray[i];
-      count++;
+  let timePeak = 0;
+  let timeRms = 0;
+  if (timeData && timeData.length > 0) {
+    let sumSq = 0;
+    for (let i = 0; i < timeData.length; i++) {
+      const dev = Math.abs(timeData[i] - 128);
+      if (dev > timePeak) timePeak = dev;
+      sumSq += dev * dev;
     }
-    const avg = count > 0 ? sum / count : 0;
-    const scaled = (avg * 0.4 + peak * 0.6) / 1.7;
-    bands.push(Math.min(100, Math.round(scaled)));
+    timeRms = Math.sqrt(sumSq / timeData.length);
+  }
+  const hasVoiceInTime = timePeak > 2;
+
+  for (let b = 0; b < numBands; b++) {
+    let freqScaled = 0;
+    if (dataArray && voiceBins > 0) {
+      const start = b * binStep;
+      const end = Math.min(voiceBins, start + binStep);
+      let sum = 0;
+      let peak = 0;
+      let count = 0;
+      for (let i = start; i < end; i++) {
+        if (dataArray[i] > peak) peak = dataArray[i];
+        sum += dataArray[i];
+        count++;
+      }
+      const avg = count > 0 ? sum / count : 0;
+      freqScaled = (avg * 0.4 + peak * 0.6) / 1.5;
+    }
+
+    let timeBandScaled = 0;
+    if (hasVoiceInTime && timeData) {
+      const sliceSize = Math.max(1, Math.floor(timeData.length / numBands));
+      const tStart = b * sliceSize;
+      const tEnd = Math.min(timeData.length, tStart + sliceSize);
+      let localPeak = 0;
+      for (let j = tStart; j < tEnd; j++) {
+        const dev = Math.abs(timeData[j] - 128);
+        if (dev > localPeak) localPeak = dev;
+      }
+      // Định hình sóng âm tự nhiên: các cột giữa cao hơn 2 biên (phù hợp dải tần giọng người 300Hz-3kHz)
+      const centerFactor = 1.0 - Math.abs((b - (numBands / 2)) / (numBands / 2)) * 0.35;
+      timeBandScaled = ((localPeak / 128) * 100 * 2.8 + (timeRms / 128) * 100 * 1.5) * centerFactor;
+    }
+
+    const bandVal = Math.max(freqScaled, timeBandScaled);
+    bands.push(Math.min(100, Math.round(bandVal)));
   }
 
   return bands;
 }
 
-function isVirtualOrUnwantedMic(label) {
+export function isVirtualOrUnwantedMic(label) {
   if (!label) return false;
   const l = label.toLowerCase();
   return (
@@ -75,7 +114,28 @@ function isVirtualOrUnwantedMic(label) {
     l.includes('camo') ||
     l.includes('droidcam') ||
     l.includes('iriun') ||
-    l.includes('obs')
+    l.includes('obs') ||
+    l.includes('line in') ||
+    l.includes('blackhole') ||
+    l.includes('vb-audio') ||
+    l.includes('cable output')
+  );
+}
+
+export function isHardwareMicrophone(label) {
+  if (!label) return false;
+  const l = label.toLowerCase();
+  if (isVirtualOrUnwantedMic(label)) return false;
+  return (
+    l.includes('array') ||
+    l.includes('realtek') ||
+    l.includes('intel') ||
+    l.includes('headset') ||
+    l.includes('headphone') ||
+    l.includes('usb') ||
+    l.includes('built-in') ||
+    l.includes('internal') ||
+    l.includes('microphone')
   );
 }
 
@@ -105,25 +165,39 @@ export async function getAudioInputDevices() {
   }
 }
 
-// Chọn micro ưu tiên (loại bỏ micro ảo, stereo mix)
+// Chọn micro ưu tiên (loại bỏ triệt để micro ảo như DeskIn, stereo mix)
 export function pickDefaultMicrophone(devices) {
   if (!devices || devices.length === 0) return '';
 
-  // Ưu tiên 1: Microphone Array hoặc thiết bị Realtek/Intel vật lý
-  const preferred = devices.find(
+  // 1. Ưu tiên cao nhất: Micro phần cứng vật lý thực tế (Microphone Array, Realtek, Headset, USB, Intel...)
+  const hardwareMic = devices.find(
+    (m) =>
+      m.label &&
+      isHardwareMicrophone(m.label) &&
+      m.deviceId !== 'default' &&
+      m.deviceId !== 'communications'
+  );
+  if (hardwareMic) return hardwareMic.deviceId;
+
+  // 2. Bất kỳ micro nào có nhãn thực tế không phải ảo/unwanted
+  const realMic = devices.find(
     (m) =>
       m.label &&
       !isVirtualOrUnwantedMic(m.label) &&
-      (m.label.toLowerCase().includes('array') ||
-       m.deviceId === 'default' ||
-       m.label.toLowerCase().includes('realtek') ||
-       m.label.toLowerCase().includes('intel'))
+      m.deviceId !== 'default' &&
+      m.deviceId !== 'communications'
   );
-  if (preferred) return preferred.deviceId;
+  if (realMic) return realMic.deviceId;
 
-  // Ưu tiên 2: Bất kỳ micro nào không phải ảo
-  const realMic = devices.find((m) => m.label && !isVirtualOrUnwantedMic(m.label));
-  return realMic ? realMic.deviceId : (devices[0]?.deviceId || '');
+  // 3. Nếu 'default' không phải là micro ảo (kiểm tra label của default)
+  const sysDefault = devices.find((m) => m.deviceId === 'default');
+  if (sysDefault && (!sysDefault.label || !isVirtualOrUnwantedMic(sysDefault.label))) {
+    return 'default';
+  }
+
+  // 4. Thiết bị đầu tiên không phải micro ảo
+  const nonVirtual = devices.find((m) => !isVirtualOrUnwantedMic(m.label));
+  return nonVirtual ? nonVirtual.deviceId : (devices[0]?.deviceId || '');
 }
 
 // Kiểm tra codec MediaRecorder được hỗ trợ tốt nhất
@@ -157,9 +231,9 @@ export async function createAudioAnalyser(stream) {
 
   const analyser = ctx.createAnalyser();
   analyser.fftSize = 256;
-  analyser.smoothingTimeConstant = 0.3;
-  analyser.minDecibels = -85;
-  analyser.maxDecibels = -15;
+  analyser.smoothingTimeConstant = 0.2; // Độ phản hồi cao, bắt sóng nhanh
+  analyser.minDecibels = -90; // Nhạy hơn với âm lượng giọng nói thông thường
+  analyser.maxDecibels = -10;
 
   const source = ctx.createMediaStreamSource(stream);
   source.connect(analyser);
@@ -168,7 +242,9 @@ export async function createAudioAnalyser(stream) {
   const silentGain = ctx.createGain();
   silentGain.gain.value = 0.0;
   analyser.connect(silentGain);
-  silentGain.connect(ctx.destination);
+  try {
+    silentGain.connect(ctx.destination);
+  } catch {}
 
   return { ctx, analyser, source, silentGain };
 }
@@ -188,12 +264,26 @@ export async function testMicrophone(deviceId, {
   let mediaRecorder = null;
   const audioChunks = [];
 
+  let chosenDeviceId = deviceId;
+  if (!chosenDeviceId || chosenDeviceId === 'default') {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+        const devs = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = devs.filter((d) => d.kind === 'audioinput');
+        const best = pickDefaultMicrophone(audioInputs);
+        if (best && best !== 'default') {
+          chosenDeviceId = best;
+        }
+      }
+    } catch {}
+  }
+
   try {
     const tryConstraints = [];
-    if (deviceId && deviceId !== 'default') {
+    if (chosenDeviceId && chosenDeviceId !== 'default') {
       tryConstraints.push({
         audio: {
-          deviceId: { exact: deviceId },
+          deviceId: { exact: chosenDeviceId },
           autoGainControl: true,
           echoCancellation: true,
           noiseSuppression: true
@@ -201,7 +291,7 @@ export async function testMicrophone(deviceId, {
       });
       tryConstraints.push({
         audio: {
-          deviceId: { ideal: deviceId },
+          deviceId: { ideal: chosenDeviceId },
           autoGainControl: true,
           echoCancellation: true,
           noiseSuppression: true
@@ -231,8 +321,29 @@ export async function testMicrophone(deviceId, {
       throw lastError || new Error('Không thể mở microphone');
     }
 
-    const track = stream.getAudioTracks()[0];
-    if (onTrackInfo) {
+    let track = stream.getAudioTracks()[0];
+
+    // Nếu rơi vào micro ảo (DeskIn/Stereo Mix), tìm đổi sang micro thực
+    if (track && isVirtualOrUnwantedMic(track.label)) {
+      try {
+        const devs = await navigator.mediaDevices.enumerateDevices();
+        const realDev = devs.find((d) => d.kind === 'audioinput' && !isVirtualOrUnwantedMic(d.label) && d.deviceId !== 'default');
+        if (realDev) {
+          stream.getTracks().forEach((t) => t.stop());
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              deviceId: { exact: realDev.deviceId },
+              autoGainControl: true,
+              echoCancellation: true,
+              noiseSuppression: true
+            }
+          });
+          track = stream.getAudioTracks()[0];
+        }
+      } catch {}
+    }
+
+    if (onTrackInfo && track) {
       onTrackInfo({
         label: track.label,
         muted: track.muted,
@@ -240,15 +351,11 @@ export async function testMicrophone(deviceId, {
         settings: track.getSettings ? track.getSettings() : {}
       });
     }
-    if (onMutedChange) {
+    if (onMutedChange && track) {
       onMutedChange(track.muted);
+      track.onmute = () => onMutedChange(true);
+      track.onunmute = () => onMutedChange(false);
     }
-    track.onmute = () => {
-      if (onMutedChange) onMutedChange(true);
-    };
-    track.onunmute = () => {
-      if (onMutedChange) onMutedChange(false);
-    };
 
     // 1. Phân tích âm lượng qua AudioContext & AnalyserNode
     analyserSetup = await createAudioAnalyser(stream);
@@ -258,12 +365,15 @@ export async function testMicrophone(deviceId, {
       const timeData = new Uint8Array(analyser.fftSize);
 
       const loop = () => {
+        if (analyserSetup.ctx && analyserSetup.ctx.state === 'suspended') {
+          try { analyserSetup.ctx.resume(); } catch {}
+        }
         analyser.getByteFrequencyData(freqData);
         analyser.getByteTimeDomainData(timeData);
         const vol = calculateVoiceVolume(freqData, timeData);
         if (onVolume) onVolume(vol);
         if (onFrequencyBands) {
-          onFrequencyBands(getFrequencyBands(freqData, 20));
+          onFrequencyBands(getFrequencyBands(freqData, 20, timeData));
         }
         animFrameId = requestAnimationFrame(loop);
       };
@@ -324,13 +434,30 @@ export async function startAudioCapture({
   onFrequencyBands,
   onRecordedBlob,
   onMutedChange,
-  onTrackInfo
+  onTrackInfo,
+  onError
 } = {}) {
+  let chosenDeviceId = deviceId;
+
+  // Nếu deviceId rỗng hoặc là 'default', tự động quét tìm micro phần cứng tốt nhất
+  if (!chosenDeviceId || chosenDeviceId === 'default') {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+        const devs = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = devs.filter((d) => d.kind === 'audioinput');
+        const best = pickDefaultMicrophone(audioInputs);
+        if (best && best !== 'default') {
+          chosenDeviceId = best;
+        }
+      }
+    } catch {}
+  }
+
   const tryConstraints = [];
-  if (deviceId && deviceId !== 'default') {
+  if (chosenDeviceId && chosenDeviceId !== 'default') {
     tryConstraints.push({
       audio: {
-        deviceId: { exact: deviceId },
+        deviceId: { exact: chosenDeviceId },
         autoGainControl: true,
         echoCancellation: true,
         noiseSuppression: true
@@ -338,7 +465,7 @@ export async function startAudioCapture({
     });
     tryConstraints.push({
       audio: {
-        deviceId: { ideal: deviceId },
+        deviceId: { ideal: chosenDeviceId },
         autoGainControl: true,
         echoCancellation: true,
         noiseSuppression: true
@@ -366,18 +493,41 @@ export async function startAudioCapture({
   }
 
   if (!stream || stream.getAudioTracks().length === 0) {
-    throw lastErr || new Error('Không thể truy cập Microphone');
+    const finalErr = lastErr || new Error('Không thể truy cập Microphone');
+    if (onError) onError(finalErr);
+    throw finalErr;
   }
 
-  const track = stream.getAudioTracks()[0];
-  if (onTrackInfo) {
+  let track = stream.getAudioTracks()[0];
+
+  // Nếu stream trúng phải micro ảo (như DeskIn/Stereo Mix), tìm micro thực khác
+  if (track && isVirtualOrUnwantedMic(track.label)) {
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      const realDev = devs.find((d) => d.kind === 'audioinput' && !isVirtualOrUnwantedMic(d.label) && d.deviceId !== 'default');
+      if (realDev) {
+        stream.getTracks().forEach((t) => t.stop());
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            deviceId: { exact: realDev.deviceId },
+            autoGainControl: true,
+            echoCancellation: true,
+            noiseSuppression: true
+          }
+        });
+        track = stream.getAudioTracks()[0];
+      }
+    } catch {}
+  }
+
+  if (onTrackInfo && track) {
     onTrackInfo({
       label: track.label,
       muted: track.muted,
       enabled: track.enabled
     });
   }
-  if (onMutedChange) {
+  if (onMutedChange && track) {
     onMutedChange(track.muted);
     track.onmute = () => onMutedChange(true);
     track.onunmute = () => onMutedChange(false);
@@ -391,25 +541,33 @@ export async function startAudioCapture({
     const timeData = new Uint8Array(analyser.fftSize);
 
     const liveLoop = () => {
+      if (analyserSetup.ctx && analyserSetup.ctx.state === 'suspended') {
+        try { analyserSetup.ctx.resume(); } catch {}
+      }
       analyser.getByteFrequencyData(freqData);
       analyser.getByteTimeDomainData(timeData);
       const vol = calculateVoiceVolume(freqData, timeData);
       if (onVolume) onVolume(vol);
       if (onFrequencyBands) {
-        onFrequencyBands(getFrequencyBands(freqData, 20));
+        onFrequencyBands(getFrequencyBands(freqData, 20, timeData));
       }
       animFrameId = requestAnimationFrame(liveLoop);
     };
     liveLoop();
   }
 
+  let recorder = null;
   const audioChunks = [];
   const mimeType = getSupportedAudioMimeType();
-  const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-  recorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) audioChunks.push(e.data);
-  };
-  recorder.start(100);
+  try {
+    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) audioChunks.push(e.data);
+    };
+    recorder.start(100);
+  } catch (recErr) {
+    console.warn('Lỗi khởi tạo MediaRecorder (bản ghi audio sẽ không khả dụng):', recErr);
+  }
 
   return {
     stream,
@@ -421,7 +579,7 @@ export async function startAudioCapture({
         if (onVolume) onVolume(0);
         if (onFrequencyBands) onFrequencyBands(new Array(20).fill(0));
 
-        recorder.onstop = () => {
+        const cleanup = () => {
           try { stream.getTracks().forEach((t) => t.stop()); } catch {}
           if (analyserSetup?.ctx && analyserSetup.ctx.state !== 'closed') {
             try { analyserSetup.ctx.close(); } catch {}
@@ -435,14 +593,11 @@ export async function startAudioCapture({
           resolve(blob);
         };
 
-        if (recorder.state !== 'inactive') {
-          try { recorder.stop(); } catch { resolve(null); }
+        if (recorder && recorder.state !== 'inactive') {
+          recorder.onstop = cleanup;
+          try { recorder.stop(); } catch { cleanup(); }
         } else {
-          try { stream.getTracks().forEach((t) => t.stop()); } catch {}
-          if (analyserSetup?.ctx && analyserSetup.ctx.state !== 'closed') {
-            try { analyserSetup.ctx.close(); } catch {}
-          }
-          resolve(null);
+          cleanup();
         }
       });
     },
@@ -450,11 +605,13 @@ export async function startAudioCapture({
       if (animFrameId) cancelAnimationFrame(animFrameId);
       if (onVolume) onVolume(0);
       if (onFrequencyBands) onFrequencyBands(new Array(20).fill(0));
-      try {
-        recorder.ondataavailable = null;
-        recorder.onstop = null;
-        if (recorder.state !== 'inactive') recorder.stop();
-      } catch {}
+      if (recorder) {
+        try {
+          recorder.ondataavailable = null;
+          recorder.onstop = null;
+          if (recorder.state !== 'inactive') recorder.stop();
+        } catch {}
+      }
       try { stream.getTracks().forEach((t) => t.stop()); } catch {}
       if (analyserSetup?.ctx && analyserSetup.ctx.state !== 'closed') {
         try { analyserSetup.ctx.close(); } catch {}

@@ -10,6 +10,97 @@ import { generateRequestId, getHomeRealtimeChannel } from './iotService';
 const DEFAULT_HOME_ID = '00000000-0000-0000-0000-000000000001';
 const REPLY_EVENTS = ['profile_info', 'setup_result', 'learn_progress', 'learn_result', 'learn_timeout'];
 
+// Danh sách giao thức điều hòa ưu tiên dòng Âm trần Cassette lên đầu (khớp AC_PROTOCOL_CANDIDATES trong config.h)
+export const DEFAULT_AC_PROTOCOLS = [
+  'DAIKIN64',
+  'DAIKIN176',
+  'DAIKIN128',
+  'DAIKIN200',
+  'PANASONIC_AC',
+  'PANASONIC_AC32',
+  'MITSUBISHI_AC',
+  'MITSUBISHI_HEAVY_152',
+  'MITSUBISHI112',
+  'MITSUBISHI136',
+  'MITSUBISHI_HEAVY_88',
+  'TOSHIBA_AC',
+  'CARRIER_AC64',
+  'MIDEA',
+  'COOLIX',
+  'GREE',
+  'LG',
+  'LG2',
+  'SAMSUNG_AC',
+  'FUJITSU_AC',
+  'HITACHI_AC',
+  'HAIER_AC_YRW02',
+  'DAIKIN',
+  'DAIKIN2',
+  'DAIKIN216',
+  'DAIKIN160',
+  'DAIKIN152',
+  'SHARP_AC',
+  'KELVINATOR',
+  'TCL112AC',
+  'HAIER_AC',
+  'ELECTRA_AC',
+  'AIRWELL',
+  'KELON',
+  'MIRAGE',
+  'TECO',
+  'VESTEL_AC',
+  'TECHNIBEL_AC',
+];
+
+export const AC_PROTOCOL_META = {
+  DAIKIN64: { label: 'Âm trần Daikin Cassette (Remote BRC52A62 / R04089...)', ceiling: true, togglePower: true },
+  DAIKIN176: { label: 'Âm trần Daikin Cassette (Remote BRC4C151 / BRC4C153)', ceiling: true, togglePower: false },
+  DAIKIN128: { label: 'Âm trần Daikin Cassette (Remote BRC52B63)', ceiling: true, togglePower: true },
+  DAIKIN200: { label: 'Âm trần Daikin Cassette 360° (Remote BRC4M150W16)', ceiling: true, togglePower: false },
+  DAIKIN: { label: 'Daikin Inverter treo tường (ARC433 / ARC470)', ceiling: false, togglePower: false },
+  DAIKIN2: { label: 'Daikin 2 chiều cao cấp (ARC477)', ceiling: false, togglePower: false },
+  DAIKIN216: { label: 'Daikin thế hệ mới (ARC480)', ceiling: false, togglePower: false },
+  DAIKIN160: { label: 'Daikin 20-byte (ARC423A5)', ceiling: false, togglePower: false },
+  DAIKIN152: { label: 'Daikin 19-byte (ARC480A5)', ceiling: false, togglePower: false },
+  PANASONIC_AC: { label: 'Âm trần & Treo tường Panasonic Inverter (216-bit)', ceiling: true, togglePower: false },
+  PANASONIC_AC32: { label: 'Âm trần Panasonic dòng gọn (32-bit)', ceiling: true, togglePower: true },
+  MITSUBISHI_AC: { label: 'Âm trần & Treo tường Mitsubishi Electric', ceiling: true, togglePower: false },
+  MITSUBISHI112: { label: 'Âm trần & Treo tường Mitsubishi Electric (112-bit)', ceiling: true, togglePower: false },
+  MITSUBISHI136: { label: 'Âm trần & Treo tường Mitsubishi Electric (136-bit)', ceiling: true, togglePower: false },
+  MITSUBISHI_HEAVY_152: { label: 'Âm trần Mitsubishi Heavy Industries (152-bit)', ceiling: true, togglePower: false },
+  MITSUBISHI_HEAVY_88: { label: 'Mitsubishi Heavy Industries (88-bit)', ceiling: true, togglePower: false },
+  TOSHIBA_AC: { label: 'Âm trần & Treo tường Toshiba', ceiling: true, togglePower: false },
+  CARRIER_AC64: { label: 'Âm trần & Nối ống gió Carrier (64-bit)', ceiling: true, togglePower: false },
+  MIDEA: { label: 'Âm trần & Treo tường Midea / Funiki / Comfee (48-bit)', ceiling: true, togglePower: false },
+  COOLIX: { label: 'Funiki R32 / Midea / Casper / Nagakawa (24-bit)', ceiling: false, togglePower: false },
+  GREE: { label: 'Âm trần & Treo tường Gree / Casper', ceiling: true, togglePower: false },
+  LG: { label: 'Âm trần & Treo tường LG (28-bit)', ceiling: true, togglePower: false },
+  LG2: { label: 'Âm trần & Treo tường LG thế hệ 2', ceiling: true, togglePower: false },
+  SAMSUNG_AC: { label: 'Âm trần Cassette 360° & Treo tường Samsung', ceiling: true, togglePower: false },
+  FUJITSU_AC: { label: 'Âm trần & Treo tường Fujitsu / General', ceiling: true, togglePower: false },
+  HITACHI_AC: { label: 'Âm trần & Treo tường Hitachi', ceiling: true, togglePower: false },
+  HAIER_AC_YRW02: { label: 'Âm trần & Treo tường Haier / Aqua (YR-W02)', ceiling: true, togglePower: false },
+  SHARP_AC: { label: 'Điều hòa Sharp Inverter', ceiling: false, togglePower: false },
+  KELVINATOR: { label: 'Gree / Electrolux / Kelvinator (128-bit)', ceiling: false, togglePower: false },
+  TCL112AC: { label: 'Điều hòa TCL / Casper (112-bit)', ceiling: false, togglePower: false },
+  HAIER_AC: { label: 'Điều hòa Haier / Aqua', ceiling: false, togglePower: false },
+  ELECTRA_AC: { label: 'Điều hòa AUX / Sumikura / Electra', ceiling: false, togglePower: false },
+  AIRWELL: { label: 'Điều hòa Airwell (Đảo nguồn)', ceiling: false, togglePower: true },
+  KELON: { label: 'Điều hòa Kelon / Hisense (Đảo nguồn)', ceiling: false, togglePower: true },
+  MIRAGE: { label: 'Điều hòa Mirage', ceiling: false, togglePower: false },
+  TECO: { label: 'Điều hòa Teco', ceiling: false, togglePower: false },
+  VESTEL_AC: { label: 'Điều hòa Vestel', ceiling: false, togglePower: false },
+  TECHNIBEL_AC: { label: 'Điều hòa Technibel', ceiling: false, togglePower: false },
+};
+
+export function getAcProtocolLabel(protocol) {
+  return AC_PROTOCOL_META[protocol]?.label || protocol;
+}
+
+export function isTogglePowerAcProtocol(protocol) {
+  return Boolean(AC_PROTOCOL_META[protocol]?.togglePower);
+}
+
 export const AC_SETUP_ERRORS = {
   E_BUSY: 'Mạch đang học lệnh, thử lại sau',
   E_PROTOCOL: 'Mạch không hỗ trợ giao thức này',

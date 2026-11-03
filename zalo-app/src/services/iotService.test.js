@@ -136,6 +136,81 @@ describe('iotService - Seam 1 (Command & Realtime ACK Bridge)', () => {
       expect(res.message).toContain('thành công');
     });
 
+    it('giữ nguyên protocol, forceToggle, keepPower cho điều hòa âm trần khi RPC trả về params rút gọn', async () => {
+      vi.spyOn(supabaseClientModule, 'isSupabaseConfigured').mockReturnValue(true);
+
+      let broadcastHandler = null;
+      let sentBroadcast = null;
+
+      const mockChannel = {
+        state: 'joined',
+        subscribe: vi.fn((cb) => { if (cb) cb('SUBSCRIBED'); return mockChannel; }),
+        send: vi.fn(async (msg) => {
+          sentBroadcast = msg;
+          if (msg.event === 'command' && broadcastHandler) {
+            setTimeout(() => {
+              broadcastHandler({
+                payload: { commandId: msg.payload.commandId, ok: true }
+              });
+            }, 10);
+          }
+          return 'ok';
+        }),
+        on: vi.fn((type, filter, handler) => {
+          if (type === 'broadcast' && filter.event === 'ack') {
+            broadcastHandler = handler;
+          }
+          return mockChannel;
+        })
+      };
+
+      // Giả lập DB RPC cũ chỉ trả về { power, temp, mode, fan }, làm mất protocol/keepPower/forceToggle
+      const mockSupabase = {
+        rpc: vi.fn().mockResolvedValue({
+          data: {
+            success: true,
+            commandId: 'cmd_ac_ceiling_01',
+            seq: 205,
+            expiresAt: Date.now() + 10000,
+            params: { power: true, temp: 23, mode: 'cool', fan: 'auto' }
+          },
+          error: null
+        }),
+        channel: vi.fn().mockReturnValue(mockChannel),
+        from: vi.fn().mockReturnValue({
+          update: vi.fn().mockReturnValue({
+            eq: vi.fn().mockResolvedValue({ error: null })
+          })
+        })
+      };
+
+      vi.spyOn(supabaseClientModule, 'getSupabase').mockReturnValue(mockSupabase);
+
+      const res = await sendIotCommand({
+        deviceId: 'ac_funiki',
+        action: 'SET',
+        title: 'Điều hòa âm trần 23°C',
+        power: true,
+        temp: 23,
+        mode: 'cool',
+        fan: 'high',
+        protocol: 'DAIKIN64',
+        keepPower: true,
+        forceToggle: false
+      });
+
+      expect(res.success).toBe(true);
+      expect(sentBroadcast.payload.params).toEqual({
+        power: true,
+        temp: 23,
+        mode: 'cool',
+        fan: 'high',
+        protocol: 'DAIKIN64',
+        keepPower: true,
+        forceToggle: false
+      });
+    });
+
     it('báo lỗi khi ESP32 trả về ACK thất bại (E_IR_SEND_FAIL)', async () => {
       vi.spyOn(supabaseClientModule, 'isSupabaseConfigured').mockReturnValue(true);
 
@@ -220,6 +295,75 @@ describe('iotService - Seam 1 (Command & Realtime ACK Bridge)', () => {
       expect(res.success).toBe(false);
       expect(res.isOffline).toBe(true);
       expect(res.message).toContain('ngoại tuyến');
+    });
+
+    it('vẫn phát lệnh qua Realtime khi RPC báo E_BOARD_OFFLINE giả nhưng ESP32 đang online qua Presence', async () => {
+      vi.spyOn(supabaseClientModule, 'isSupabaseConfigured').mockReturnValue(true);
+
+      let broadcastHandler = null;
+      let sentBroadcast = null;
+
+      const mockChannel = {
+        topic: 'realtime:home:00000000-0000-0000-0000-000000000001',
+        state: 'joined',
+        presenceState: () => ({ board_esp32_live: [{ battery: 95, rssi: -55 }] }),
+        subscribe: vi.fn((cb) => { if (cb) cb('SUBSCRIBED'); return mockChannel; }),
+        send: vi.fn(async (msg) => {
+          sentBroadcast = msg;
+          if (msg.event === 'command' && broadcastHandler) {
+            setTimeout(() => {
+              broadcastHandler({ payload: { commandId: msg.payload.commandId, ok: true } });
+            }, 10);
+          }
+          return 'ok';
+        }),
+        on: vi.fn((type, filter, handler) => {
+          if (type === 'broadcast' && filter.event === 'ack') {
+            broadcastHandler = handler;
+          }
+          return mockChannel;
+        })
+      };
+
+      const mockUpdateEq = vi.fn().mockResolvedValue({ error: null });
+      const mockSupabase = {
+        channels: [mockChannel],
+        rpc: vi.fn().mockResolvedValue({
+          data: { success: false, error: 'E_BOARD_OFFLINE' },
+          error: null
+        }),
+        channel: vi.fn().mockReturnValue(mockChannel),
+        from: vi.fn().mockReturnValue({
+          update: vi.fn().mockReturnValue({
+            eq: mockUpdateEq
+          })
+        })
+      };
+
+      vi.spyOn(supabaseClientModule, 'getSupabase').mockReturnValue(mockSupabase);
+
+      const res = await sendIotCommand({
+        deviceId: 'ac_funiki',
+        action: 'POWER_ON',
+        title: 'Bật điều hòa âm trần 22°C',
+        power: true,
+        temp: 22,
+        mode: 'cool',
+        fan: 'high',
+        protocol: 'DAIKIN64',
+        forceToggle: true
+      });
+
+      expect(res.success).toBe(true);
+      expect(sentBroadcast).not.toBeNull();
+      expect(sentBroadcast.payload.params).toMatchObject({
+        power: true,
+        temp: 22,
+        protocol: 'DAIKIN64',
+        forceToggle: true
+      });
+      // Đảm bảo đã đồng bộ trạng thái điều hòa xuống bảng device_state
+      expect(mockSupabase.from).toHaveBeenCalledWith('device_state');
     });
   });
 });

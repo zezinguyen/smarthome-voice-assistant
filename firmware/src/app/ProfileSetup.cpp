@@ -76,6 +76,8 @@ const char* ProfileSetup::tryProtocol(JsonObjectConst payload) {
     request.temperatureC = constrain(payload["temp"] | 25, AC_TEMP_MIN_DEFAULT, AC_TEMP_MAX_DEFAULT);
     request.mode = payload["mode"] | "cool";
     request.fan = payload["fan"] | "auto";
+    request.action = "TEST";
+    request.powerToggle = true;
     const char* error = sender_.sendAc(request) ? nullptr : errorCodeName(ErrorCode::IrSendFail);
     log_i("App: thu giao thuc %s -> %s", request.protocol, error != nullptr ? error : "ok");
     return error;
@@ -120,9 +122,18 @@ const char* ProfileSetup::setProtocol(JsonObjectConst payload) {
     if (!changed) {
         return kErrBadRequest;
     }
+    // Đồng bộ luôn alias mặc định (ac_funiki <-> ac_living) nếu cả hai cùng có trong profile
+    if (strcmp(deviceId, DEFAULT_AC_DEVICE_ID) == 0 || strcmp(deviceId, DEFAULT_AC_ALT_DEVICE_ID) == 0) {
+        const char* siblingId =
+            strcmp(deviceId, DEFAULT_AC_DEVICE_ID) == 0 ? DEFAULT_AC_ALT_DEVICE_ID : DEFAULT_AC_DEVICE_ID;
+        if (!store_.findDevice(siblingId).isNull()) {
+            profileSetAcProtocol(doc, siblingId, protocol);
+        }
+    }
     if (!store_.save(doc)) {
         return kErrSaveFailed;
     }
+    commands_.resetAcPower();
     log_i("App: luu %s = %s (profile v%u)", deviceId, protocol, store_.profileVersion());
     return nullptr;
 }

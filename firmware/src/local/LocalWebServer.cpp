@@ -208,6 +208,8 @@ void LocalWebServer::handleAcTry() {
     request.temperatureC = constrain(body["temp"] | 25, AC_TEMP_MIN_DEFAULT, AC_TEMP_MAX_DEFAULT);
     request.mode = body["mode"] | "cool";
     request.fan = body["fan"] | "auto";
+    request.action = "TEST";
+    request.powerToggle = true;
     const char* error = sender_.sendAc(request) ? nullptr : errorCodeName(ErrorCode::IrSendFail);
     log_i("Web: thu %s -> %s", request.protocol, error != nullptr ? error : "ok");
     sendResult(error);
@@ -224,14 +226,28 @@ void LocalWebServer::handleAcProtocol() {
         sendResult(kErrProtocol);
         return;
     }
+    const char* deviceId = body["deviceId"];
     JsonDocument doc = store_.document();
-    if (!profileSetAcProtocol(doc, body["deviceId"], protocol)) {
+    if (!profileSetAcProtocol(doc, deviceId, protocol)) {
         // Đã đúng giao thức thì coi như xong; sai deviceId thì báo lỗi
-        const bool same = store_.findDevice(body["deviceId"])["irac_protocol"] == protocol;
+        const bool same = store_.findDevice(deviceId)["irac_protocol"] == protocol;
         sendResult(same ? nullptr : kErrBadRequest);
         return;
     }
-    sendResult(saveProfile(doc) ? nullptr : kErrSaveFailed);
+    if (deviceId != nullptr &&
+        (strcmp(deviceId, DEFAULT_AC_DEVICE_ID) == 0 || strcmp(deviceId, DEFAULT_AC_ALT_DEVICE_ID) == 0)) {
+        const char* siblingId =
+            strcmp(deviceId, DEFAULT_AC_DEVICE_ID) == 0 ? DEFAULT_AC_ALT_DEVICE_ID : DEFAULT_AC_DEVICE_ID;
+        if (!store_.findDevice(siblingId).isNull()) {
+            profileSetAcProtocol(doc, siblingId, protocol);
+        }
+    }
+    if (!saveProfile(doc)) {
+        sendResult(kErrSaveFailed);
+        return;
+    }
+    commands_.resetAcPower();
+    sendResult(nullptr);
 }
 
 void LocalWebServer::handleLearnStart() {

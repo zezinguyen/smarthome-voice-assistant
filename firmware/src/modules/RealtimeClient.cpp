@@ -21,7 +21,7 @@ void RealtimeClient::begin(const char* accessToken, const char* channelName, con
     const String path = String("/realtime/v1/websocket?apikey=") + SUPABASE_ANON_KEY + "&vsn=1.0.0";
     socket_.onEvent([this](WStype_t type, uint8_t* payload, size_t length) { onSocketEvent(type, payload, length); });
     // Heartbeat ở tầng Phoenix là bắt buộc; ping/pong của WebSocket để tắt (spec 5.1)
-    socket_.beginSslWithCA(SUPABASE_HOST, SUPABASE_PORT, path.c_str(), SUPABASE_ROOT_CA);
+    socket_.beginSSL(SUPABASE_HOST, SUPABASE_PORT, path.c_str());
     socket_.setReconnectInterval(backoff_.nextDelayMs(boardRandom()));
     started_ = true;
 }

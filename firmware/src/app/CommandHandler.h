@@ -1,4 +1,5 @@
 #pragma once
+#include <AcPowerState.h>
 #include <ArduinoJson.h>
 #include <CommandGuard.h>
 #include <stdint.h>
@@ -39,6 +40,8 @@ public:
     const char* runAction(const char* deviceId, const char* action, JsonObjectConst params);
     // Phát một IrCode ({protocol, code, bits} hoặc {raw, freq}). nullptr = thành công.
     const char* sendIrCode(JsonObjectConst command);
+    // Đặt lại trạng thái nguồn điều hòa trong RAM khi đổi giao thức điều hòa mới.
+    void resetAcPower() { acPower_.reset(); }
 
 private:
     void handleCommand(JsonObjectConst command);
@@ -46,6 +49,8 @@ private:
     void sendLearnEvent(const char* event, const char* status);
     void finishLearning();
     const char* sendDeviceCommand(JsonObjectConst device, const char* action, JsonObjectConst params);
+    const char* sendAcCommand(const char* acProtocol, int16_t tempMin, int16_t tempMax, const char* action,
+                              JsonObjectConst params);
 
     DeviceStore& store_;
     IrSender& sender_;
@@ -58,4 +63,5 @@ private:
     LearnSource learnSource_ = LearnSource::App;
     String learnRequestId_;
     CommandResultHandler resultHandler_ = nullptr;
+    AcPowerState acPower_;
 };

@@ -8,6 +8,8 @@
 #include <IrCompare.h>
 #include <string.h>
 
+#include "modules/IrSender.h"
+
 namespace {
 IRrecv irRecv(PIN_IR_RX, IR_RX_BUFFER_SIZE, IR_RX_TIMEOUT_MS, true);
 decode_results decodeResults;
@@ -74,6 +76,14 @@ LearnEvent IrLearner::update(uint32_t nowMs) {
     }
 
     if (captureCount_ == 0) {
+        // Nếu lần thu đầu tiên đã nhận dạng được giao thức điều hòa hỗ trợ IRac
+        // (VD "DAIKIN", "DAIKIN2", "DAIKIN128", "PANASONIC_AC"... theo spec mục 7.5: chủ nhà chỉ cần bấm 1 phím)
+        // thì thành công ngay!
+        if (IrSender::isAcProtocolSupported(captures_[0].detected)) {
+            log_i("Da nhan dien giao thuc dieu hoa ngay lan 1: %s", captures_[0].detected);
+            stop();
+            return LearnEvent::Success;
+        }
         captureCount_ = 1;
         return LearnEvent::FirstCaptured;
     }
@@ -121,6 +131,10 @@ bool IrLearner::capturesMatch() const {
     const bool decoded = strcmp(a.protocol, "UNKNOWN") != 0;
     if (decoded) {
         return strcmp(a.protocol, b.protocol) == 0 && a.value == b.value && a.bits == b.bits;
+    }
+    // Nếu cả 2 lần thu đều nhận diện được cùng một giao thức (kể cả điều hòa có AC state)
+    if (strcmp(a.detected, "UNKNOWN") != 0 && strcmp(a.detected, b.detected) == 0) {
+        return true;
     }
     return rawCapturesMatch(a.raw, a.rawLength, b.raw, b.rawLength, IR_MATCH_TOLERANCE_PERCENT,
                             IR_MATCH_MIN_TOLERANCE_US);

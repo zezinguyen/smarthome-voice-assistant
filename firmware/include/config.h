@@ -117,7 +117,7 @@ constexpr uint32_t COMMAND_RATE_WINDOW_MS = 1000; // ... trong cửa sổ này
 // IR
 // -----------------------------------------------------------------------------
 constexpr uint16_t IR_RX_BUFFER_SIZE = 2048;          // Remote điều hòa: gói dài + lặp lại, 1024 dễ tràn
-constexpr uint8_t IR_RX_TIMEOUT_MS = 50;          // 50ms để thu được gói dài của điều hòa
+constexpr uint8_t IR_RX_TIMEOUT_MS = 60;          // 60ms để bao trọn khoảng lặng giữa các gói của điều hòa Daikin (thường 29-35ms)
 constexpr uint16_t IR_RAW_MAX_LENGTH = 1024;
 constexpr uint16_t IR_DEFAULT_KHZ = 38;
 constexpr uint32_t IR_LEARN_TIMEOUT_MS = 15UL * 1000;
@@ -125,12 +125,21 @@ constexpr uint8_t IR_MATCH_TOLERANCE_PERCENT = 25;
 constexpr uint16_t IR_MATCH_MIN_TOLERANCE_US = 150;
 constexpr int16_t AC_TEMP_MIN_DEFAULT = 16;        // Khi profile không có limits
 constexpr int16_t AC_TEMP_MAX_DEFAULT = 30;
-// Giao thức điều hòa gợi ý khi chọn/dò trên app hoặc web bản thử. Máy OEM (VD Funiki) không có tên riêng
-// trong IRremoteESP8266 -> thử lần lượt các giao thức hay gặp, hoặc dò bằng remote thật.
+// Giao thức điều hòa gợi ý khi chọn/dò trên app hoặc web bản thử. Ưu tiên điều hòa âm trần Cassette
+// (Daikin BRC52A62 -> DAIKIN64, BRC4C151/153 -> DAIKIN176, BRC52B63 -> DAIKIN128, BRC4M150 -> DAIKIN200,
+// Panasonic/Mitsubishi/Toshiba/Carrier âm trần) cùng các dòng treo tường và máy OEM (Funiki -> COOLIX).
 constexpr const char* AC_PROTOCOL_CANDIDATES[] = {
+    "DAIKIN64", "DAIKIN176", "DAIKIN128", "DAIKIN200", "DAIKIN", "DAIKIN2", "DAIKIN216", "DAIKIN160", "DAIKIN152",
+    "PANASONIC_AC", "PANASONIC_AC32", "MITSUBISHI_AC", "MITSUBISHI112", "MITSUBISHI136",
+    "MITSUBISHI_HEAVY_152", "MITSUBISHI_HEAVY_88", "TOSHIBA_AC", "CARRIER_AC64",
+    "LG", "LG2", "SAMSUNG_AC", "FUJITSU_AC", "SHARP_AC", "HITACHI_AC",
     "COOLIX", "MIDEA", "GREE", "KELVINATOR", "TCL112AC", "HAIER_AC_YRW02", "HAIER_AC", "ELECTRA_AC",
-    "AIRWELL", "KELON", "MIRAGE", "TECO", "VESTEL_AC", "TECHNIBEL_AC", "CARRIER_AC64", "DAIKIN",
+    "AIRWELL", "KELON", "MIRAGE", "TECO", "VESTEL_AC", "TECHNIBEL_AC",
 };
+constexpr const char* DEFAULT_AC_DEVICE_ID = "ac_funiki";
+constexpr const char* DEFAULT_AC_ALT_DEVICE_ID = "ac_living";
+constexpr const char* DEFAULT_AC_DEVICE_NAME = "Điều hòa âm trần Daikin";
+constexpr const char* DEFAULT_AC_PROTOCOL = "DAIKIN64";
 constexpr uint8_t IR_LEARN_MAX_FAILS = 3;          // Quá số lần -> E_LEARN_FAIL
 constexpr uint8_t LEARNED_CODE_QUEUE_SIZE = 4;     // Mã học từ nút chờ gửi khi mất mạng
 
@@ -201,8 +210,8 @@ constexpr size_t SERIAL_BRIDGE_MAX_LINE = 1024;
 // -----------------------------------------------------------------------------
 constexpr const char* LOCAL_MDNS_HOSTNAME = "smarthome";  // -> http://smarthome.local
 constexpr const char* LOCAL_AC_DEVICE_ID = "ac_funiki";
-constexpr const char* LOCAL_AC_DEVICE_NAME = "Điều hòa Funiki R32";
-constexpr const char* LOCAL_AC_DEFAULT_PROTOCOL = "COOLIX";  // Đã dò bằng remote Funiki R32 thật (15/10/2026)
-constexpr const char* LOCAL_LEARN_DEVICE_ID = "remote_hoc";  // Phím học bằng mắt thu lưu vào đây
+constexpr const char* LOCAL_AC_DEVICE_NAME = "Điều hòa âm trần Daikin";
+constexpr const char* LOCAL_AC_DEFAULT_PROTOCOL = "DAIKIN64";  // Mặc định âm trần Daikin Cassette (Funiki R32 dùng COOLIX)
+constexpr const char* LOCAL_LEARN_DEVICE_ID = "remote_hoc";    // Phím học bằng mắt thu lưu vào đây
 constexpr const char* LOCAL_LEARN_DEVICE_NAME = "Phím đã học";
-constexpr size_t LOCAL_NAME_MAX_BYTES = 32;                  // Tên phím / thiết bị (UTF-8)
+constexpr size_t LOCAL_NAME_MAX_BYTES = 32;                    // Tên phím / thiết bị (UTF-8)

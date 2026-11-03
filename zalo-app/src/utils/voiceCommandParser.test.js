@@ -171,6 +171,23 @@ describe('voiceCommandParser - Seam: Air Conditioner (AC) Controls', () => {
       temp: 22,
       fan: 'high'
     });
+
+    const resMedium = parseVoiceCommand('bật âm trần 23 độ quạt vừa');
+    expect(resMedium).toMatchObject({
+      action: 'SET',
+      deviceId: 'ac_funiki',
+      temp: 23,
+      fan: 'medium',
+      hasExplicitTemp: true,
+      hasExplicitFan: true
+    });
+
+    const resOffCeiling = parseVoiceCommand('tắt âm trần đi');
+    expect(resOffCeiling).toMatchObject({
+      action: 'POWER_OFF',
+      deviceId: 'ac_funiki',
+      power: false
+    });
   });
 
   it('clamps out-of-range temperatures between 16°C and 30°C per AC specs', () => {
@@ -179,6 +196,42 @@ describe('voiceCommandParser - Seam: Air Conditioner (AC) Controls', () => {
 
     const resTooHigh = parseVoiceCommand('máy lạnh 35 độ');
     expect(resTooHigh.temp).toBe(30);
+  });
+
+  it('recognizes standalone temperature phrases like "24 độ", "đặt 25 độ"', () => {
+    const res1 = parseVoiceCommand('24 độ');
+    expect(res1).toMatchObject({
+      action: 'SET',
+      deviceId: 'ac_funiki',
+      temp: 24,
+      power: true
+    });
+
+    const res2 = parseVoiceCommand('đặt 26 độ');
+    expect(res2).toMatchObject({
+      action: 'SET',
+      deviceId: 'ac_funiki',
+      temp: 26,
+      power: true
+    });
+  });
+
+  it('recognizes comfort phrases "nóng quá" and "lạnh quá"', () => {
+    const hot = parseVoiceCommand('nóng quá');
+    expect(hot).toMatchObject({
+      action: 'SET',
+      deviceId: 'ac_funiki',
+      temp: 22,
+      fan: 'high'
+    });
+
+    const cold = parseVoiceCommand('lạnh quá đi');
+    expect(cold).toMatchObject({
+      action: 'SET',
+      deviceId: 'ac_funiki',
+      temp: 26,
+      fan: 'low'
+    });
   });
 });
 

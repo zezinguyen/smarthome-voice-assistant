@@ -402,7 +402,8 @@ BEGIN
         FROM public.device_state
         WHERE device_id = p_device_id;
 
-        v_full_params := jsonb_build_object(
+        -- Giữ nguyên các tham số mở rộng (protocol, forceToggle, keepPower) cho điều hòa âm trần
+        v_full_params := COALESCE(p_params, '{}'::jsonb) || jsonb_build_object(
             'power', COALESCE((p_params->>'power')::boolean, v_state.power, true),
             'temp', COALESCE((p_params->>'temp')::integer, v_state.temp, 24),
             'mode', COALESCE(p_params->>'mode', v_state.mode, 'cool'),
@@ -838,6 +839,16 @@ VALUES
     '{}'::jsonb,
     'PANASONIC_AC',
     '{"temp_min": 16, "temp_max": 30, "modes": ["auto", "cool", "heat", "dry", "fan"]}'::jsonb
+),
+(
+    'ac_daikin_ceiling_brc52a62',
+    'ac',
+    'Daikin',
+    'Ceiling Cassette BRC52A62',
+    NULL,
+    '{}'::jsonb,
+    'DAIKIN64',
+    '{"temp_min": 16, "temp_max": 30, "modes": ["cool", "heat", "dry", "fan", "auto"]}'::jsonb
 )
 ON CONFLICT (id) DO NOTHING;
 
@@ -845,10 +856,13 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO public.home_devices (id, home_id, board_id, name, room, type, brand, catalog_id)
 VALUES 
     ('tv_living', '00000000-0000-0000-0000-000000000001'::uuid, 'board_living_01', 'Tivi LG Phòng Khách', 'Phòng khách', 'tv', 'LG', 'tv_lg_generic'),
-    ('ac_living', '00000000-0000-0000-0000-000000000001'::uuid, 'board_living_01', 'Điều hòa Panasonic', 'Phòng khách', 'ac', 'Panasonic', 'ac_panasonic_generic')
+    ('ac_living', '00000000-0000-0000-0000-000000000001'::uuid, 'board_living_01', 'Điều hòa Âm trần Daikin', 'Phòng khách', 'ac', 'Daikin', 'ac_daikin_ceiling_brc52a62'),
+    ('ac_funiki', '00000000-0000-0000-0000-000000000001'::uuid, 'board_living_01', 'Điều hòa Âm trần Daikin', 'Phòng khách', 'ac', 'Daikin', 'ac_daikin_ceiling_brc52a62')
 ON CONFLICT (id) DO NOTHING;
 
 -- Khởi tạo trạng thái điều hòa ban đầu
 INSERT INTO public.device_state (device_id, home_id, power, temp, mode, fan)
-VALUES ('ac_living', '00000000-0000-0000-0000-000000000001'::uuid, false, 24, 'cool', 'auto')
+VALUES
+    ('ac_living', '00000000-0000-0000-0000-000000000001'::uuid, false, 24, 'cool', 'auto'),
+    ('ac_funiki', '00000000-0000-0000-0000-000000000001'::uuid, false, 24, 'cool', 'auto')
 ON CONFLICT (device_id) DO NOTHING;

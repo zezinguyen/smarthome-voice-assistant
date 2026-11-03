@@ -2,8 +2,8 @@ import { convertBlobToWav } from '../utils/wavUtils';
 
 
 // Model Google AI Studio, thử lần lượt. Mặc định hợp gói miễn phí (demo): Flash Lite 500 lần/ngày,
-// Flash chỉ 20 lần/ngày nên để cuối. Đổi không cần sửa code: VITE_GEMINI_MODELS="a,b,c" trong .env
-const DEFAULT_GEMINI_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'];
+// Flash chỉ 20 lần/ngày nên để sau. Đổi không cần sửa code: VITE_GEMINI_MODELS="a,b,c" trong .env
+const DEFAULT_GEMINI_MODELS = ['gemini-2.0-flash-lite', 'gemini-2.0-flash', 'gemini-1.5-flash'];
 
 export function getGeminiModels() {
   const fromEnv = typeof import.meta !== 'undefined' && import.meta.env?.VITE_GEMINI_MODELS;
@@ -29,13 +29,23 @@ export function getActiveApiKey(providedKey) {
   return '';
 }
 
-function cleanJsonOutput(text) {
+export function cleanJsonOutput(text) {
   if (!text) return '';
-  let cleaned = text.trim();
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  let str = text.trim();
+
+  // 1. Kiểm tra khối markdown ```json ... ```
+  const codeBlockMatch = str.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (codeBlockMatch && codeBlockMatch[1]) {
+    str = codeBlockMatch[1].trim();
   }
-  return cleaned;
+
+  // 2. Tìm khối JSON { ... } lớn nhất
+  const jsonMatch = str.match(/\{[\s\S]*\}/);
+  if (jsonMatch && jsonMatch[0]) {
+    return jsonMatch[0].trim();
+  }
+
+  return str;
 }
 
 export async function postVilaoChatCompletion(payload, apiKey, customEndpoints = null) {
@@ -90,7 +100,7 @@ export async function callVilaoApi(prompt, apiKey) {
         content: prompt
       }
     ],
-    max_tokens: 150,
+    max_tokens: 3000,
     temperature: 0.1
   }, apiKey);
 
@@ -138,31 +148,52 @@ export async function callGoogleGeminiApi(payload, apiKey) {
   throw lastError || new Error('Không thể kết nối đến Google Gemini');
 }
 
-export async function analyzeVoiceWithGemini(userText, apiKey) {
+export async function analyzeVoiceWithGemini(userText, apiKey, customRemotes = []) {
   const activeKey = getActiveApiKey(apiKey);
   if (!activeKey) {
     throw new Error('Chưa cấu hình API Key trong file .env');
   }
 
-  const prompt = `Phân loại khẩu lệnh Smart TV: "${userText}"
-Hiểu phương ngữ Bắc/Trung/Nam, tiếng người già, trẻ nhỏ, cách nói nhại (vô túp, nét phờ lích, ti di, vô tuyến), câu tự nhiên.
+  let customPromptBlock = '';
+  if (Array.isArray(customRemotes) && customRemotes.length > 0) {
+    const lines = [];
+    for (const remote of customRemotes) {
+      if (!remote.buttons || !Array.isArray(remote.buttons)) continue;
+      for (const btn of remote.buttons) {
+        const aliases = (btn.voiceAliases || []).join(', ');
+        lines.push(`- Nút "${btn.label}" (action: "${btn.action || 'CUSTOM_ACTION'}", remote: "${remote.name || 'Remote ảo'}", bí danh: [${aliases}])`);
+      }
+    }
+    if (lines.length > 0) {
+      customPromptBlock = `\n--- CÁC PHÍM TÙY CHỈNH / REMOTE ẢO TRONG NHÀ ---\n${lines.join('\n')}\n`;
+    }
+  }
+
+  const prompt = `Phân loại khẩu lệnh nhà thông minh (Smart TV, Điều hòa hoặc Thiết bị trong nhà): "${userText}"
+Hiểu phương ngữ Bắc/Trung/Nam, tiếng người già, trẻ nhỏ, cách nói tự nhiên.
 
 DANH SÁCH LỆNH:
-1. YOUTUBE_SEARCH: Khi người dùng muốn xem kênh cụ thể, ca sĩ, phim, video trên YouTube (VD: "mở kênh VTV24", "xem MixiGaming", "mở FAP TV", "bật nhạc thiếu nhi", "xem hài Hoài Linh", "mở nhạc Trịnh").
-   -> IR: 0x20DF58A7 | Icon: ▶️ | Title: Mở kênh [Tên kênh] trên YouTube | channelQuery: "[Tên kênh/nội dung]"
-2. APP_YOUTUBE: Mở chung ứng dụng YouTube (không có tên kênh cụ thể) -> IR: 0x20DF58A7 | Icon: ▶️ | Title: Mở YouTube | channelQuery: ""
-3. APP_NETFLIX: Netflix, nét phờ lích, coi phim... -> IR: 0x20DF5EA1 | Icon: 🍿 | Title: Mở Netflix
-4. TV_POWER_ON: Bật tivi, mở tivi, mở đài, mở máy, xem tivi... -> IR: 0x20DF10EF | Icon: 📺 | Title: Bật Tivi
-5. TV_POWER_OFF: Tắt tivi, tắt đài, đi ngủ, nghỉ coi, dẹp tivi... -> IR: 0x20DF10EF | Icon: 🔌 | Title: Tắt Tivi
-6. VOL_UP: Tăng âm lượng, to lên, lớn tiếng, bự tiếng... -> IR: 0x20DF40BF | Icon: 🔊 | Title: Tăng âm lượng
-7. VOL_DOWN: Giảm âm lượng, nhỏ lại, bớt ồn, bé lại... -> IR: 0x20DFC03F | Icon: 🔉 | Title: Giảm âm lượng
-8. MUTE: Tắt tiếng, im lặng, câm tiếng, ngắt tiếng... -> IR: 0x20DF906F | Icon: 🔇 | Title: Tắt tiếng (Mute)
-9. CH_VTV1: Thời sự, vtv1, đài 1... -> IR: 0x20DF00FF | Icon: 📡 | Title: Kênh VTV1
-10. CH_VTV3: VTV3, kênh 3, giải trí... -> IR: 0x20DF08F7 | Icon: 📡 | Title: Kênh VTV3
-11. UNKNOWN: Không liên quan Tivi -> IR: 0x00000000 | Icon: ❓ | Title: Lệnh chưa xác định
+--- ĐIỀU HÒA (Air Conditioner) ---
+1. AC_COOL: Bật điều hòa, mở điều hòa, làm mát, mở máy lạnh... -> action: "AC_COOL", title: "Bật điều hòa làm mát", device: "Điều hòa (Hồng ngoại)", temp: 24
+2. AC_OFF: Tắt điều hòa, tắt máy lạnh, nóng quá tắt đi, lạnh quá tắt máy... -> action: "AC_OFF", title: "Tắt điều hòa", device: "Điều hòa (Hồng ngoại)"
+3. AC_SET_TEMP: Đặt nhiệt độ điều hòa (VD: "điều hòa 24 độ", "26 độ", "hạ xuống 22 độ", "nóng quá", "lạnh quá") -> action: "AC_SET_TEMP", title: "Đặt điều hòa nhiệt độ", device: "Điều hòa (Hồng ngoại)", temp: [16-30]
+
+--- SMART TV ---
+4. YOUTUBE_SEARCH: Khi người dùng muốn xem kênh cụ thể, ca sĩ, phim, video trên YouTube -> action: "YOUTUBE_SEARCH", title: "Mở kênh trên YouTube", channelQuery: "[Tên kênh/nội dung]", device: "Smart TV (Hồng ngoại)"
+5. APP_YOUTUBE: Mở chung ứng dụng YouTube -> action: "APP_YOUTUBE", title: "Mở YouTube", device: "Smart TV (Hồng ngoại)"
+6. APP_NETFLIX: Netflix, nét phờ lích, coi phim... -> action: "APP_NETFLIX", title: "Mở Netflix", device: "Smart TV (Hồng ngoại)"
+7. TV_POWER_ON: Bật tivi, mở tivi, mở đài, xem tivi... -> action: "TV_POWER_ON", title: "Bật Tivi", device: "Smart TV (Hồng ngoại)"
+8. TV_POWER_OFF: Tắt tivi, tắt đài, đi ngủ, nghỉ coi, dẹp tivi... -> action: "TV_POWER_OFF", title: "Tắt Tivi", device: "Smart TV (Hồng ngoại)"
+9. VOL_UP: Tăng âm lượng, to lên, lớn tiếng... -> action: "VOL_UP", title: "Tăng âm lượng", device: "Smart TV (Hồng ngoại)"
+10. VOL_DOWN: Giảm âm lượng, nhỏ lại, bớt ồn... -> action: "VOL_DOWN", title: "Giảm âm lượng", device: "Smart TV (Hồng ngoại)"
+11. MUTE: Tắt tiếng, im lặng... -> action: "MUTE", title: "Tắt tiếng (Mute)", device: "Smart TV (Hồng ngoại)"
+12. CH_VTV1: Thời sự, vtv1, đài 1... -> action: "CH_VTV1", title: "Kênh VTV1", device: "Smart TV (Hồng ngoại)"
+13. CH_VTV3: VTV3, kênh 3, giải trí... -> action: "CH_VTV3", title: "Kênh VTV3", device: "Smart TV (Hồng ngoại)"
+${customPromptBlock}
+14. UNKNOWN: Hoàn toàn không liên quan đến điều khiển thiết bị nhà thông minh -> action: "UNKNOWN", title: "Lệnh chưa xác định", device: "Chưa xác định"
 
 Trả về DUY NHẤT một JSON hợp lệ:
-{"action":"TÊN_LỆNH","title":"Tên ngắn","channelQuery":"Tên kênh nếu có","irCode":"Mã IR","icon":"Emoji","device":"Smart TV (Hồng ngoại + Cast)","explanation":"Giải thích ngắn 1 câu"}`;
+{"action":"TÊN_LỆNH","title":"Tên ngắn","temp":24,"channelQuery":"","device":"Tên thiết bị","explanation":"Giải thích ngắn 1 câu"}`;
 
   if (activeKey.startsWith('sk-')) {
     return await callVilaoApi(prompt, activeKey);
@@ -199,129 +230,36 @@ export async function transcribeAndAnalyzeAudioWithGemini(audioBlob, apiKey) {
     throw new Error('Chưa cấu hình API Key trong file .env');
   }
 
-  const prompt = `
-Bạn là Trợ lý AI Nhà thông minh chuyên nghe âm thanh giọng nói tiếng Việt từ micro để điều khiển Tivi và Điều hòa:
+  const prompt = `Bạn là Trợ lý AI Nhà thông minh chuyên nghe giọng nói tiếng Việt từ micro để điều khiển Tivi và Điều hòa.
 
-QUY TẮC NHẬN DIỆN:
-1. TRÍCH XUẤT TRUNG THỰC: Hãy nghe kỹ và ghi lại CHÍNH XÁC lời nói tiếng Việt của người dùng vào trường "transcript".
-   - Kể cả khi câu nói là câu trò chuyện, câu hát, lời chào ("alo", "chào bạn", "thử mic"), VẪN PHẢI ghi đầy đủ vào "transcript".
-   - TUYỆT ĐỐI KHÔNG ghi nhận xét (như "quá nhỏ", "tiếng ồn", "im lặng") vào trường "transcript".
-2. KHI HOÀN TOÀN KHÔNG CÓ TIẾNG NGƯỜI NÓI (chỉ có im lặng, quạt gió, rè mic):
-   Bắt buộc trả về:
-   {
-     "transcript": "",
-     "action": "UNKNOWN",
-     "title": "Không có tiếng nói",
-     "channelQuery": "",
-     "irCode": "0x00000000",
-     "icon": "❓",
-     "device": "Chưa xác định",
-     "explanation": "Không phát hiện tiếng người nói."
-   }
-
-DANH SÁCH LỆNH:
---- THIẾT BỊ TIVI (Smart TV) ---
-1. YOUTUBE_SEARCH: Khi người dùng muốn xem kênh, bài hát, ca sĩ, phim trên YouTube (VD: "mở kênh VTV24", "xem MixiGaming", "mở FAP TV", "bật nhạc thiếu nhi", "xem hài Hoài Linh", "mở nhạc Sơn Tùng")
-   -> IR: 0x20DF58A7 | Icon: ▶️ | Title: Mở [Nội dung] trên YouTube | channelQuery: "[Tên kênh/nội dung]" | device: "Smart TV (Hồng ngoại)"
-2. APP_YOUTUBE: Mở chung ứng dụng YouTube -> IR: 0x20DF58A7 | Icon: ▶️ | Title: Mở YouTube | channelQuery: "" | device: "Smart TV (Hồng ngoại)"
-3. APP_NETFLIX: Netflix, nét phờ lích, coi phim... -> IR: 0x20DF5EA1 | Icon: 🍿 | Title: Mở Netflix | device: "Smart TV (Hồng ngoại)"
-4. TV_POWER_ON: Bật tivi, mở tivi, mở đài, lên tivi... -> IR: 0x20DF10EF | Icon: 📺 | Title: Bật Tivi | device: "Smart TV (Hồng ngoại)"
-5. TV_POWER_OFF: Tắt tivi, tắt đài, tắt máy, đi ngủ... -> IR: 0x20DF10EF | Icon: 🔌 | Title: Tắt Tivi | device: "Smart TV (Hồng ngoại)"
-6. VOL_UP: Tăng âm lượng, cho to lên, vặn to lên, lớn tiếng... -> IR: 0x20DF40BF | Icon: 🔊 | Title: Tăng âm lượng | device: "Smart TV (Hồng ngoại)"
-7. VOL_DOWN: Giảm âm lượng, nhỏ lại, bớt ồn, bé lại... -> IR: 0x20DFC03F | Icon: 🔉 | Title: Giảm âm lượng | device: "Smart TV (Hồng ngoại)"
-8. MUTE: Tắt tiếng, im lặng, câm tiếng, ngắt tiếng... -> IR: 0x20DF906F | Icon: 🔇 | Title: Tắt tiếng (Mute) | device: "Smart TV (Hồng ngoại)"
-9. CH_VTV1: Thời sự, kênh 1, vtv1, tin tức... -> IR: 0x20DF00FF | Icon: 📡 | Title: Kênh VTV1 | device: "Smart TV (Hồng ngoại)"
-10. CH_VTV3: Kênh 3, vtv3, phim truyện... -> IR: 0x20DF08F7 | Icon: 📡 | Title: Kênh VTV3 | device: "Smart TV (Hồng ngoại)"
-
---- THIẾT BỊ ĐIỀU HÒA (Air Conditioner) ---
-11. AC_COOL: Bật điều hòa, mở điều hòa, làm mát, mở máy lạnh, bật máy lạnh... -> IR: 0x00000000 | Icon: ❄️ | Title: Bật điều hòa làm mát | device: "Điều hòa (Hồng ngoại)"
-12. AC_OFF: Tắt điều hòa, tắt máy lạnh, nóng quá tắt đi, lạnh quá tắt máy... -> IR: 0x00000000 | Icon: 🛑 | Title: Tắt điều hòa | device: "Điều hòa (Hồng ngoại)"
-13. AC_SET_TEMP: Đặt nhiệt độ điều hòa (VD: "điều hòa 24 độ", "26 độ", "hạ xuống 22 độ", "cho 25 độ") -> IR: 0x00000000 | Icon: 🌡️ | Title: Điều hòa [N]°C | temp: [số nguyên 16-30] | device: "Điều hòa (Hồng ngoại)"
-
-14. UNKNOWN: Câu nói không điều khiển Tivi hay Điều hòa -> IR: 0x00000000 | Icon: ❓ | Title: Lệnh chưa xác định | device: "Chưa xác định"
-
-Trả về DUY NHẤT một JSON hợp lệ:
+HÃY NGHE KỸ ĐOẠN ÂM THANH ĐÍNH KÈM VÀ TRẢ VỀ DUY NHẤT 1 ĐỐI TƯỢNG JSON TRONG CẶP NGOẶC NHỌN {}:
 {
-  "transcript": "Lời nói tiếng Việt thực sự nghe được (chuỗi rỗng nếu hoàn toàn không có người nói)",
-  "action": "TÊN_HÀNH_ĐỘNG",
-  "title": "Tên hành động ngắn gọn",
-  "channelQuery": "Từ khóa tìm kiếm nếu có",
-  "irCode": "Mã IR tương ứng",
-  "icon": "Emoji",
-  "device": "Tên thiết bị",
+  "transcript": "Ghi lại chính xác câu nói tiếng Việt nghe được từ đoạn âm thanh (để chuỗi rỗng nếu chỉ có im lặng, rè hoặc không có người nói)",
+  "action": "TÊN_LỆNH",
   "temp": 24,
-  "explanation": "Giải thích ngắn 1 câu"
+  "title": "Tên ngắn gọn"
 }
-`;
+
+DANH SÁCH LỆNH CHÍNH:
+- Điều hòa: "bật điều hòa", "mở điều hòa", "máy lạnh", "24 độ", "26 độ", "hạ nhiệt độ", "nóng quá" -> action: "AC_SET_TEMP", temp: [16-30]
+- Tắt điều hòa: "tắt điều hòa", "tắt máy lạnh" -> action: "AC_OFF"
+- Tivi: "bật tivi" (TV_POWER_ON), "tắt tivi" (TV_POWER_OFF), "mở youtube" (APP_YOUTUBE), "tăng âm lượng" (VOL_UP), "giảm âm lượng" (VOL_DOWN), "tắt tiếng" (MUTE), "vtv1" (CH_VTV1), "vtv3" (CH_VTV3)
+- Không có tiếng hoặc không rõ: action: "UNKNOWN", transcript: ""
+
+BẮT BUỘC: Chỉ trả về JSON duy nhất, tuyệt đối KHÔNG thêm lời chào, KHÔNG giải thích, KHÔNG viết markdown ngoài cặp ngoặc nhọn.`;
 
   if (activeKey.startsWith('sk-')) {
-    // Gọi qua vilao.ai (gemini-3.8-flash với input_audio WAV)
-    let wavBlob = audioBlob;
-    try {
-      wavBlob = await convertBlobToWav(audioBlob);
-    } catch (e) {
-      console.warn('Lỗi convertBlobToWav, dùng blob gốc:', e);
-    }
-
-    if (!wavBlob || (wavBlob.size === 0 && wavBlob.peak === 0)) {
-      return {
-        transcript: '',
-        action: 'UNKNOWN',
-        title: 'Chưa nhận diện được giọng nói',
-        channelQuery: '',
-        irCode: '0x00000000',
-        icon: '❓',
-        device: 'Chưa xác định',
-        explanation: 'Không có dữ liệu âm thanh từ microphone.'
+    // Vilao.ai (sk-...) là proxy văn bản (model_type: text), không hỗ trợ nghe file âm thanh (audio STT).
+    // Nếu gửi audio đến Vilao sẽ gây sinh ảo (hallucination) tự bịa lệnh như "Bật tivi lên".
+    return {
+      transcript: '',
+      action: 'UNKNOWN',
+      title: 'Chưa nghe rõ giọng nói',
+      channelQuery: '',
+      irCode: '0x00000000',
+      icon: '❓',
+      device: 'Chưa xác định',
       };
-    }
-
-    const base64Wav = await blobToBase64(wavBlob);
-    const result = await postVilaoChatCompletion({
-      model: 'gemini-3.8-flash',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: prompt
-            },
-            {
-              type: 'input_audio',
-              input_audio: {
-                data: base64Wav,
-                format: 'wav'
-              }
-            }
-          ]
-        }
-      ],
-      max_tokens: 500,
-      temperature: 0.1
-    }, activeKey);
-
-    const content = result.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new Error('AI không trả về nội dung dữ liệu');
-    }
-    const cleaned = cleanJsonOutput(content);
-    const parsed = JSON.parse(cleaned);
-
-    // BẢO VỆ CHỐNG TỰ ĐỘNG TẠO LỆNH:
-    // Nếu không có transcript thực tế từ lời nói người dùng, ép action thành UNKNOWN
-    if (!parsed.transcript || !parsed.transcript.trim() ||
-        parsed.transcript.toLowerCase().includes('không phát hiện') ||
-        parsed.transcript.toLowerCase().includes('im lặng') ||
-        parsed.transcript.toLowerCase().includes('không có tiếng') ||
-        parsed.transcript.toLowerCase().includes('tiếng ồn')) {
-      parsed.transcript = '';
-      parsed.action = 'UNKNOWN';
-      parsed.title = 'Chưa nhận diện được giọng nói';
-    }
-
-    parsed._modelUsed = 'vilao.ai (gemini-3.8-flash audio)';
-    return parsed;
   }
 
   const base64Audio = await blobToBase64(audioBlob);

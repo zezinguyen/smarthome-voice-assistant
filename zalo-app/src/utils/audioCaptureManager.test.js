@@ -70,6 +70,16 @@ describe('audioCaptureManager - Deep Module Seams', () => {
       expect(pickDefaultMicrophone(devices)).toBe('dev-3');
     });
 
+    it('filters out DeskIn virtual microphone even if Windows marks it as default, picking Microphone Array', () => {
+      const devices = [
+        { deviceId: 'default', label: 'Default - Microphone (DeskIn(R) Virtual Audio Device)' },
+        { deviceId: 'deskin-id', label: 'Microphone (DeskIn(R) Virtual Audio Device)' },
+        { deviceId: 'realtek-array-id', label: 'Microphone Array (Realtek(R) Audio)' }
+      ];
+
+      expect(pickDefaultMicrophone(devices)).toBe('realtek-array-id');
+    });
+
     it('falls back to the first device if no specialized labels match', () => {
       const devices = [
         { deviceId: 'dev-a', label: 'Generic Audio 1' },
@@ -77,6 +87,21 @@ describe('audioCaptureManager - Deep Module Seams', () => {
       ];
 
       expect(pickDefaultMicrophone(devices)).toBe('dev-a');
+    });
+  });
+
+  describe('getFrequencyBands with time-domain wave', () => {
+    it('bounces frequency bands using timeData when voice is detected in time-domain', () => {
+      // Simulate speech in time-domain (oscillating between 80 and 176 around 128)
+      const timeData = new Uint8Array(256);
+      for (let i = 0; i < 256; i++) {
+        timeData[i] = Math.round(128 + 40 * Math.sin(i * 0.2));
+      }
+      const emptyFreq = new Uint8Array(128).fill(0);
+      const bands = getFrequencyBands(emptyFreq, 20, timeData);
+      expect(bands).toHaveLength(20);
+      // Middle bands should be responsive and energized
+      expect(bands[10]).toBeGreaterThan(20);
     });
   });
 
