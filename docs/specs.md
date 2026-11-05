@@ -101,8 +101,8 @@ Chia theo **cạnh board** để dây không bắt chéo: module đặt bên ph�
    Đo USB (IN+) ── VN│●            ●│ TX0    (USB nạp code)
                   D34│●            ●│ RX0    (USB nạp code)
                   D35│●            ●│ D21 ── OLED SDA
-                  D32│●   ESP32    ●│ D19 ── Mắt thu OUT
-                  D33│●  DevKit    ●│ D18
+                  D32│●   ESP32    ●│ D19
+                  D33│●  DevKit    ●│ D18 ── Mắt thu OUT
      RGB  R  ──── D25│●            ●│ D5
      RGB  G  ──── D26│●            ●│ TX2 ── DFPlayer RX
      RGB  B  ──── D27│●            ●│ RX2 ── DFPlayer TX
@@ -152,7 +152,7 @@ Module TP4056 không đưa chân CHRG ra nên firmware suy ra trạng thái: có
 | Mắt thu | ESP32 |
 |---|---|
 | VCC | 3V3 |
-| OUT | D19 |
+| OUT | D18 |
 | GND | GND |
 
 **DFPlayer Mini** (cạnh phải, giữa)
@@ -182,7 +182,7 @@ Module TP4056 không đưa chân CHRG ra nên firmware suy ra trạng thái: có
 | E của S8050 → GND | |
 | B của S8050 ← 330Ω ← **D14**; 10k từ B xuống GND | Giữ LED tắt lúc khởi động |
 
-Chân trống còn lại (D23, D34, D32, D33, D35, D18, D4) để dự phòng; D23 có thể dùng cho chân SHDN của PAM8403 nếu muốn tắt ampli khi im lặng. Không dùng D2, D5, D12, D15 (chân strapping).
+Chân trống còn lại (D23, D34, D32, D33, D35, D19, D4) để dự phòng; D23 có thể dùng cho chân SHDN của PAM8403 nếu muốn tắt ampli khi im lặng. Không dùng D2, D5, D12, D15 (chân strapping).
 
 Nút duy nhất: giữ rồi **thả tay** ở mốc nào thì chạy chức năng của mốc đó. Trong lúc giữ, OLED hiện "Tha: <chức năng>" để biết lúc nào thả.
 

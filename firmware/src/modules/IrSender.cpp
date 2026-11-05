@@ -7,6 +7,7 @@
 #include <ir_Daikin.h>
 
 #include "config.h"
+#include "modules/IrCpuBoost.h"
 
 namespace {
 IRsend irSend(PIN_IR_TX);
@@ -34,6 +35,7 @@ bool IrSender::sendCode(const char* protocol, uint64_t value, uint16_t bits) {
     if (type == decode_type_t::UNKNOWN) {
         return false;
     }
+    IrCpuBoost cpuBoost;
     return irSend.send(type, value, bits);
 }
 
@@ -41,6 +43,7 @@ bool IrSender::sendRaw(const uint16_t* durations, uint16_t length, uint16_t khz)
     if (durations == nullptr || length == 0) {
         return false;
     }
+    IrCpuBoost cpuBoost;
     irSend.sendRaw(durations, length, khz);
     return true;
 }
@@ -72,6 +75,8 @@ bool IrSender::sendAc(const AcRequest& request) {
     if (usesTogglePower && request.skipToggleIr) {
         return true;  // Đã ở đúng trạng thái Tắt, không phát cờ đảo nguồn để tránh bật nhầm máy
     }
+
+    IrCpuBoost cpuBoost;
 
     // Xử lý tối ưu riêng cho DAIKIN64 (Remote BRC52A62 / R04089036296A / DGS01 điều hòa âm trần Daikin Cassette)
     if (type == decode_type_t::DAIKIN64) {

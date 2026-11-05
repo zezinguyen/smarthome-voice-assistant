@@ -73,6 +73,7 @@ constexpr uint8_t BATTERY_HYSTERESIS_PERCENT = 2;
 
 constexpr uint32_t CPU_FREQ_BATTERY_MHZ = 80;   // Không hạ dưới 80 khi còn dùng WiFi
 constexpr uint32_t CPU_FREQ_USB_MHZ = 240;
+constexpr uint32_t IR_TX_CPU_FREQ_MHZ = 240;    // Lúc phát IR: sóng mang tạo bằng phần mềm, CPU chậm làm sai 38kHz
 constexpr bool WIFI_USE_MAX_MODEM_SLEEP = false; // true = WIFI_PS_MAX_MODEM khi chạy pin
 
 // -----------------------------------------------------------------------------
